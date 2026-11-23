@@ -1,0 +1,11 @@
+# Local development only: this makes pnpm hoist a package's transitive
+# dependencies into the top-level node_modules, which is what lets the
+# schemastery junction resolve its own @deepseek-ai/cosmokit sibling when this
+# directory is loaded directly by DSH. It is not part of the published tarball
+# (`files` excludes it), and consumers get the same effect from the DSH profile's
+# own hoisted install.
+packages:
+  - .
+
+nodeLinker: hoisted
+autoInstallPeers: false

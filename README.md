@@ -1,4 +1,4 @@
-﻿# dsh-changes（变更）
+# dsh-changes（变更）
 
 给 DeepSeek Harness Web GUI 用的**代码变更审查 + 回退**插件：把 Agent 每一轮改过的文件做成输入框上方的**一条待审条**和右侧栏的**变更面板**，逐块接受 / 撤销，并支持 Git / SVN 整区回退。
 

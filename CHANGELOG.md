@@ -1,5 +1,11 @@
 # 更新记录
 
+## 1.0.1
+
+修复 1.0.0 无法安装的问题：package.json 曾被写成带 UTF-8 BOM 的文件，DSH 用严格 JSON 解析它时会报
+`Cannot validate installed package ... Unexpected token`，导致安装被拒绝。现在所有文本文件都是无 BOM 的 UTF-8，
+发布工作流也加了 BOM 检查，避免再次发出无法安装的包。
+
 ## 1.0.0
 
 首个公开版本。

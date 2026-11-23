@@ -40,6 +40,8 @@ window.__ModuleLoader__.load({
         'bar.failed': '操作失败',
         'bar.retry': '重试',
         'bar.droppedSome': '已撤销 {handled} 个文件，{skipped} 个二进制 / 超大文件只能保留',
+        'bar.queueBadge': '+{count} 批',
+        'bar.queueHint': '还有 {count} 批待审，处理完当前这批后依次出现',
         'bar.empty': '本会话改动已全部处理',
         'bar.broken': '变更记录器不可用，暂时无法提供改动提示',
         'bar.keepOne': '已保留 {name}',
@@ -70,6 +72,11 @@ window.__ModuleLoader__.load({
         'panel.baselineLabel': '审查基线',
         'panel.pickRefFirst': '先选择一个版本点',
         'panel.refTooMany': '仅显示前 {shown} 个，还有 {rest} 个',
+        'panel.batch': '第 {index} 批 · 第 {turn} 轮',
+        'panel.batchPending': '{count} 个待确认',
+        'panel.batchDone': '已处理',
+        'panel.restored': '来自上一次运行的存档',
+        'panel.restoredBadge': '存档',
         'panel.rollbackHint': '整区回退会把工作区强制对齐到所选版本，丢弃其后的所有改动。先切换到 Git / SVN 基线并选择版本点。',
         'panel.rollbackConfirm': '把工作区强制对齐到 {ref}？这会丢弃该版本之后的所有改动，且不可恢复。',
         'panel.rolledBack': '已回退到 {ref}',
@@ -106,6 +113,8 @@ window.__ModuleLoader__.load({
         'bar.failed': 'The action failed',
         'bar.retry': 'Retry',
         'bar.droppedSome': 'Reverted {handled} files; {skipped} binary or oversized files can only be kept',
+        'bar.queueBadge': '+{count} more',
+        'bar.queueHint': '{count} more batch(es) queued; each appears once this one is cleared',
         'bar.empty': 'Every change in this session has been handled',
         'bar.broken': 'The change recorder is unavailable, so there is nothing to review',
         'bar.keepOne': 'Kept {name}',
@@ -136,6 +145,11 @@ window.__ModuleLoader__.load({
         'panel.baselineLabel': 'Review baseline',
         'panel.pickRefFirst': 'Pick a version point first',
         'panel.refTooMany': 'Showing the first {shown}; {rest} more',
+        'panel.batch': 'Batch {index} · turn {turn}',
+        'panel.batchPending': '{count} unconfirmed',
+        'panel.batchDone': 'handled',
+        'panel.restored': 'Restored from a previous run',
+        'panel.restoredBadge': 'restored',
         'panel.rollbackHint': 'Rolling back forces the workspace onto the chosen version and discards everything after it. Switch to a Git / SVN baseline and pick a version point first.',
         'panel.rollbackConfirm': 'Force the workspace to {ref}? Every change after that version is discarded and cannot be recovered.',
         'panel.rolledBack': 'Rolled back to {ref}',
@@ -384,6 +398,9 @@ window.__ModuleLoader__.load({
 .dshc-placeholder{padding:16px 14px;font-size:12px;color:var(--dsw-alias-label-secondary,#9aa0ad);line-height:1.6}
 .dshc-error{padding:8px 12px;font-size:12px;color:var(--dsw-alias-state-error-primary,#f07070);border-bottom:1px solid var(--dsw-alias-border-l2,#303239);display:flex;gap:8px;align-items:center}
 .dshc-chip{flex:none;font-family:var(--dsw-font-mono,ui-monospace,Menlo,Consolas,monospace);font-size:10.5px;color:var(--dsw-alias-label-secondary,#9aa0ad);border:1px solid var(--dsw-alias-border-l2,#303239);border-radius:var(--dsw-radius-xs,4px);padding:0 4px}
+.dshc-batch{display:flex;align-items:center;gap:8px;padding:5px 10px;background:var(--dsw-alias-fill-l1,rgba(127,127,127,.1));border-top:1px solid var(--dsw-alias-border-l2,#303239);font-size:11px;color:var(--dsw-alias-label-secondary,#9aa0ad);position:sticky;top:0;z-index:1}
+.dshc-batch:first-child{border-top:0}
+.dshc-batch__stat{margin-left:auto;font-family:var(--dsw-font-mono,ui-monospace,Menlo,Consolas,monospace);font-size:10.5px}
 .dshc-cfg{display:flex;align-items:flex-start;gap:16px;padding:14px;border:1px solid var(--dsw-alias-border-l2,#303239);border-radius:var(--dsw-radius-md,10px);background:var(--dsw-alias-fill-l1,rgba(127,127,127,.06));color:var(--dsw-alias-label-primary,#f2f3f5);font-size:13px}
 .dshc-cfg__main{min-width:0;flex:1}
 .dshc-cfg__title{font-size:13px;font-weight:600}
@@ -476,7 +493,11 @@ window.__ModuleLoader__.load({
 
       const live = useLive(true, sessionId, 'state', null, 1500, nonce)
       const data = live.data
-      const pending = data?.ok === true ? data.pending : 0
+      // The bar reviews one batch at a time, oldest first; `queue` is every
+      // batch that still holds unconfirmed files.
+      const front = data?.ok === true ? data.front : undefined
+      const queue = data?.ok === true ? data.queue ?? [] : []
+      const pending = front?.pending ?? 0
 
       const flash = useCallback((text, bad) => {
         setNotice({ text, bad })
@@ -531,8 +552,12 @@ window.__ModuleLoader__.load({
       // being reported, which must not be swallowed by its own disappearance.
       if (pending === 0 && notice === undefined) return null
 
-      const totals = data.totals ?? { added: 0, deleted: 0 }
-      const rows = (data.files ?? []).filter((file) => !file.handled)
+      const totals = front?.totals ?? { added: 0, deleted: 0 }
+      const rows = (front?.files ?? []).filter((file) => !file.handled)
+      // Batches behind the front one, so the user knows the queue is longer than
+      // what this bar currently shows.
+      const behind = Math.max(0, queue.length - 1)
+      const frontSeq = front?.seq
 
       if (pending === 0) {
         return h(
@@ -587,6 +612,10 @@ window.__ModuleLoader__.load({
             },
             h('span', { className: 'dshc-bar__count', role: 'status', 'aria-live': 'polite' },
               t('bar.pending', { count: pending })),
+            behind > 0
+              ? h('span', { className: 'dshc-badge', title: t('bar.queueHint', { count: behind }) },
+                t('bar.queueBadge', { count: behind }))
+              : null,
             h('span', { className: 'dshc-chev', 'aria-hidden': true }, open ? '▴' : '▾'),
           ),
           h(
@@ -607,7 +636,7 @@ window.__ModuleLoader__.load({
               disabled: busy !== '',
               onClick: async () => {
                 if (!window.confirm(t('bar.confirmAll', { count: pending }))) return
-                reportDrop(await run('all', { op: 'rejectAll', pendingOnly: true }))
+                reportDrop(await run('all', { op: 'rejectAll', seq: frontSeq }))
               },
             },
             t('bar.dropAll'),
@@ -619,7 +648,7 @@ window.__ModuleLoader__.load({
               className: 'dshc-act dshc-act--primary',
               disabled: busy !== '',
               onClick: async () => {
-                const result = await run('all', { op: 'acceptAll', pendingOnly: true })
+                const result = await run('all', { op: 'acceptAll', seq: frontSeq })
                 if (result?.ok === true) flash(t('bar.keptAll'), false)
                 else flash(result?.failures?.[0] ?? result?.error ?? t('bar.failed'), true)
               },
@@ -657,7 +686,7 @@ window.__ModuleLoader__.load({
                   type: 'button',
                   className: 'dshc-row__open',
                   title: file.display,
-                  onClick: () => runtime.openPanel(file.path),
+                  onClick: () => runtime.openPanel(file.path, frontSeq),
                 },
                 h('span', { className: 'dshc-path', title: file.display }, file.display),
                 h(
@@ -674,7 +703,7 @@ window.__ModuleLoader__.load({
                   className: 'dshc-mini',
                   disabled: busy !== '',
                   onClick: async () => {
-                    const result = await run(file.path, { op: 'acceptFile', path: file.path })
+                    const result = await run(file.path, { op: 'acceptFile', seq: frontSeq, path: file.path })
                     if (result?.ok === true) flash(t('bar.keepOne', { name: shorten(file.display) }), false)
                   },
                 },
@@ -690,7 +719,7 @@ window.__ModuleLoader__.load({
                     ? t('bar.binaryOnly')
                     : file.oversized === true ? t('bar.oversizedOnly') : '',
                   onClick: async () => {
-                    const result = await run(file.path, { op: 'revertFile', path: file.path })
+                    const result = await run(file.path, { op: 'revertFile', seq: frontSeq, path: file.path })
                     if (result?.ok === true) flash(t('bar.dropOne', { name: shorten(file.display) }), false)
                     else flash(result?.error ?? t('bar.failed'), true)
                   },
@@ -749,7 +778,9 @@ window.__ModuleLoader__.load({
     function ChangesPanel(props) {
       const sessionId = props.sessionId
       const [nonce, setNonce] = useState(0)
-      const [selected, setSelected] = useState('')
+      // A selection is one file of one batch: the same path can appear in
+      // several batches, and each keeps its own decision.
+      const [selected, setSelected] = useState({ path: '', seq: undefined })
       const [baseline, setBaseline] = useState('snapshot')
       const [ref, setRef] = useState('')
       const [busy, setBusy] = useState('')
@@ -763,21 +794,33 @@ window.__ModuleLoader__.load({
 
       // A click in the bar names the file this page should show.
       useEffect(() => {
-        if (focus.path !== '') setSelected(focus.path)
+        if (focus.path !== '') setSelected({ path: focus.path, seq: focus.seq })
       }, [focus.rev])
 
-      const files = data?.ok === true ? data.files ?? [] : []
+      const batches = data?.ok === true ? data.batches ?? [] : []
+      const queue = data?.ok === true ? data.queue ?? [] : []
 
+      // Default to the first unconfirmed file of the batch in front.
       useEffect(() => {
-        if (selected !== '') return
-        const first = files.find((file) => !file.handled) ?? files[0]
-        if (first !== undefined) setSelected(first.path)
-      }, [files.length, data?.ok])
+        if (selected.path !== '') return
+        const front = queue[0]
+        const first = (front?.files ?? []).find((file) => !file.handled)
+          ?? front?.files?.[0]
+          ?? batches[0]?.files?.[0]
+        if (first !== undefined) setSelected({ path: first.path, seq: front?.seq ?? batches[0]?.seq })
+      }, [batches.length, queue.length, data?.ok])
 
       const vcs = data?.vcs ?? { kind: null, reason: '' }
       const vcsKind = vcs.kind === 'git' || vcs.kind === 'svn' ? vcs.kind : null
 
-      const diffLive = useLive(baseline === 'snapshot' && selected !== '', sessionId, 'diff', { path: selected }, 2500, nonce)
+      const diffLive = useLive(
+        baseline === 'snapshot' && selected.path !== '',
+        sessionId,
+        'diff',
+        { path: selected.path, ...(Number.isInteger(selected.seq) ? { seq: selected.seq } : {}) },
+        2500,
+        nonce,
+      )
       const diff = diffLive.data
       const refsLive = useLive(baseline !== 'snapshot' && vcsKind !== null, sessionId, 'refs', { kind: vcsKind ?? '' }, 60000, nonce)
       const refFilesLive = useLive(baseline !== 'snapshot' && ref !== '', sessionId, 'ref-files', { kind: vcsKind ?? '', ref }, 60000, nonce)
@@ -842,12 +885,22 @@ window.__ModuleLoader__.load({
         )
       }
 
-      const pendingCount = data.pending ?? 0
+      // The badge counts the batch in front (what the next decisions act on);
+      // the queue's remaining batches are named beside it.
+      const frontBatch = queue[0]
+      const frontSeq = frontBatch?.seq
+      const pendingCount = frontBatch?.pending ?? 0
+      const queueBehind = Math.max(0, queue.length - 1)
       const head = h(
         'div',
         { className: 'dshc-panel__head' },
         h('span', { className: 'dshc-panel__title' }, t('tab.title')),
         h('span', { className: 'dshc-badge' }, String(pendingCount)),
+        queueBehind > 0
+          ? h('span', { className: 'dshc-muted', title: t('bar.queueHint', { count: queueBehind }) },
+            t('bar.queueBadge', { count: queueBehind }))
+          : null,
+        data.restored === true ? h('span', { className: 'dshc-muted' }, t('panel.restoredBadge')) : null,
         h('span', { className: 'dshc-spacer' }),
         h(
           'select',
@@ -887,7 +940,7 @@ window.__ModuleLoader__.load({
           className: 'dshc-btn',
           disabled: busy !== '' || pendingCount === 0,
           onClick: async () => {
-            const result = await run({ op: 'acceptAll', pendingOnly: true })
+            const result = await run({ op: 'acceptAll', seq: frontSeq })
             if (result?.ok === true) flash(t('bar.keptAll'), false)
             else flash(result?.failures?.[0] ?? result?.error ?? t('panel.failed'), true)
           },
@@ -898,7 +951,7 @@ window.__ModuleLoader__.load({
           disabled: busy !== '' || pendingCount === 0,
           onClick: async () => {
             if (!window.confirm(t('bar.confirmAll', { count: pendingCount }))) return
-            reportDrop(await run({ op: 'rejectAll', pendingOnly: true }))
+            reportDrop(await run({ op: 'rejectAll', seq: frontSeq }))
           },
         }, t('panel.rejectAll')),
         h('button', {
@@ -911,7 +964,7 @@ window.__ModuleLoader__.load({
             const result = await run({ op: 'rollback', kind: baseline, ref })
             if (result?.ok === true) {
               flash(t('panel.rolledBack', { ref }), false)
-              setSelected('')
+              setSelected({ path: '', seq: undefined })
               setRef('')
             }
           },
@@ -969,7 +1022,7 @@ window.__ModuleLoader__.load({
                     title: file.display,
                     onClick: () => {
                       setBaseline('snapshot')
-                      setSelected(file.display)
+                      setSelected({ path: file.display, seq: undefined })
                     },
                   },
                   h('span', { className: 'dshc-chip' }, file.status),
@@ -994,7 +1047,7 @@ window.__ModuleLoader__.load({
         )
       }
 
-      if (files.length === 0) {
+      if (batches.length === 0) {
         return h(
           'div',
           { className: 'dshc-panel' },
@@ -1004,28 +1057,45 @@ window.__ModuleLoader__.load({
         )
       }
 
+      // The left column lists batches in order, so a change reviewed later never
+      // hides an earlier unconfirmed one.
       const fileList = h(
         'div',
         { className: 'dshc-files' },
-        files.map((file) => h(
-          'button',
-          {
-            key: file.path,
-            type: 'button',
-            className: 'dshc-file',
-            'data-selected': file.path === selected,
-            'data-handled': file.handled === true,
-            title: file.display,
-            onClick: () => setSelected(file.path),
-          },
-          h('span', { className: 'dshc-file__path' }, file.display),
-          h(
-            'span',
-            { className: 'dshc-file__stat' },
-            h('span', { className: 'dshc-plus' }, `+${formatStat(file.added)}`),
-            h('span', { className: 'dshc-minus' }, `−${formatStat(file.deleted)}`),
-          ),
-        )),
+        batches.flatMap((batch, batchIndex) => {
+          const header = batches.length > 1
+            ? [h('div', {
+              key: `batch-${batch.seq}`,
+              className: 'dshc-batch',
+              title: batch.restored === true ? t('panel.restored') : '',
+            },
+            h('span', null, t('panel.batch', { index: batchIndex + 1, turn: batch.turn ?? 0 })),
+            h('span', { className: 'dshc-batch__stat' }, batch.pending > 0
+              ? t('panel.batchPending', { count: batch.pending })
+              : t('panel.batchDone')),
+            )]
+            : []
+          const rows = batch.files.map((file) => h(
+            'button',
+            {
+              key: `${batch.seq}:${file.path}`,
+              type: 'button',
+              className: 'dshc-file',
+              'data-selected': file.path === selected.path && batch.seq === selected.seq,
+              'data-handled': file.handled === true,
+              title: file.display,
+              onClick: () => setSelected({ path: file.path, seq: batch.seq }),
+            },
+            h('span', { className: 'dshc-file__path' }, file.display),
+            h(
+              'span',
+              { className: 'dshc-file__stat' },
+              h('span', { className: 'dshc-plus' }, `+${formatStat(file.added)}`),
+              h('span', { className: 'dshc-minus' }, `−${formatStat(file.deleted)}`),
+            ),
+          ))
+          return [...header, ...rows]
+        }),
       )
 
       let diffHead
@@ -1035,17 +1105,17 @@ window.__ModuleLoader__.load({
         type: 'button',
         className: 'dshc-btn',
         disabled: busy !== '',
-        onClick: () => run({ op: 'acceptFile', path }),
+        onClick: () => run({ op: 'acceptFile', path, seq: diff?.seq }),
       }, t('panel.accept'))
 
       if (diff === undefined) {
-        diffHead = h('div', { className: 'dshc-diff__head' }, h('span', { className: 'dshc-diff__path' }, shorten(selected)))
+        diffHead = h('div', { className: 'dshc-diff__head' }, h('span', { className: 'dshc-diff__path' }, shorten(selected.path)))
         diffBody = h('div', { className: 'dshc-placeholder' }, t('panel.loading'))
       } else if (diff.ok === false) {
         diffHead = h(
           'div',
           { className: 'dshc-diff__head' },
-          h('span', { className: 'dshc-diff__path' }, diff.path ?? shorten(selected)),
+          h('span', { className: 'dshc-diff__path' }, diff.path ?? shorten(selected.path)),
           h('span', { className: 'dshc-progress' }, t('panel.turn', { turn: diff.turn ?? data.turn ?? 0 })),
         )
         diffBody = h('div', { className: 'dshc-placeholder' }, diff.error ?? t('panel.diffUnavailable'))
@@ -1053,7 +1123,7 @@ window.__ModuleLoader__.load({
         diffHead = h(
           'div',
           { className: 'dshc-diff__head' },
-          h('span', { className: 'dshc-diff__path' }, diff.display ?? shorten(selected)),
+          h('span', { className: 'dshc-diff__path' }, diff.display ?? shorten(selected.path)),
           h('span', { className: 'dshc-spacer' }),
           acceptFileButton(diff.path),
         )
@@ -1064,7 +1134,7 @@ window.__ModuleLoader__.load({
         diffHead = h(
           'div',
           { className: 'dshc-diff__head' },
-          h('span', { className: 'dshc-diff__path' }, diff.display ?? shorten(selected)),
+          h('span', { className: 'dshc-diff__path' }, diff.display ?? shorten(selected.path)),
           h('span', { className: 'dshc-progress' }, t('panel.turn', { turn: diff.turn ?? data.turn ?? 0 })),
           h('span', { className: 'dshc-spacer' }),
           acceptFileButton(diff.path),
@@ -1074,7 +1144,7 @@ window.__ModuleLoader__.load({
         diffHead = h(
           'div',
           { className: 'dshc-diff__head' },
-          h('span', { className: 'dshc-diff__path' }, diff.display ?? shorten(selected)),
+          h('span', { className: 'dshc-diff__path' }, diff.display ?? shorten(selected.path)),
           h('span', { className: 'dshc-progress' }, t('panel.noHunks')),
           h('span', { className: 'dshc-spacer' }),
           acceptFileButton(diff.path),
@@ -1084,7 +1154,7 @@ window.__ModuleLoader__.load({
         diffHead = h(
           'div',
           { className: 'dshc-diff__head' },
-          h('span', { className: 'dshc-diff__path' }, diff.display ?? shorten(selected)),
+          h('span', { className: 'dshc-diff__path' }, diff.display ?? shorten(selected.path)),
           h('span', { className: 'dshc-progress' }, t('panel.allHandled')),
         )
         diffBody = h('div', { className: 'dshc-diff__body' }, hunks.map((hunk) => h(HunkView, {
@@ -1097,19 +1167,19 @@ window.__ModuleLoader__.load({
         diffHead = h(
           'div',
           { className: 'dshc-diff__head' },
-          h('span', { className: 'dshc-diff__path' }, diff.display ?? shorten(selected)),
+          h('span', { className: 'dshc-diff__path' }, diff.display ?? shorten(selected.path)),
           h('span', { className: 'dshc-progress' }, t('panel.hunkProgress', { index: currentIdx + 1, total: hunks.length })),
           h('button', {
             type: 'button',
             className: 'dshc-btn',
             disabled: busy !== '',
-            onClick: () => run({ op: 'acceptHunk', path: diff.path, hunkIdx: currentIdx }),
+            onClick: () => run({ op: 'acceptHunk', path: diff.path, seq: diff.seq, hunkIdx: currentIdx }),
           }, t('panel.accept')),
           h('button', {
             type: 'button',
             className: 'dshc-btn dshc-btn--danger',
             disabled: busy !== '',
-            onClick: () => run({ op: 'rejectHunk', path: diff.path, hunkIdx: currentIdx }),
+            onClick: () => run({ op: 'rejectHunk', path: diff.path, seq: diff.seq, hunkIdx: currentIdx }),
           }, t('panel.reject')),
         )
         diffBody = h('div', { className: 'dshc-diff__body' }, hunks.map((hunk) => h(HunkView, {
@@ -1292,9 +1362,9 @@ window.__ModuleLoader__.load({
 
         runtime.configForms = () => ctx.get('configForms')
 
-        runtime.openPanel = (path) => {
+        runtime.openPanel = (path, seq) => {
           if (typeof path === 'string' && path !== '') {
-            focusStore.set({ path, rev: focusStore.get().rev + 1 })
+            focusStore.set({ path, seq, rev: focusStore.get().rev + 1 })
           }
           try {
             ctx.sidebarRight.openTab(KIND)

@@ -1,59 +1,57 @@
 {
-    "name":  "dsh-changes",
-    "version":  "1.0.1",
-    "type":  "module",
-    "description":  "Review each turn\u0027s file changes hunk by hunk, accept or revert them, and roll the workspace back to a Git commit or an SVN revision — a review bar above the composer plus a Changes page in the right sidebar.",
-    "license":  "MIT",
-    "repository":  {
-                       "type":  "git",
-                       "url":  "git+https://github.com/Careless-prograw/dsh-changes.git"
-                   },
-    "bugs":  {
-                 "url":  "https://github.com/Careless-prograw/dsh-changes/issues"
-             },
-    "homepage":  "https://github.com/Careless-prograw/dsh-changes#readme",
-    "keywords":  [
-                     "dsh",
-                     "deepseek-harness",
-                     "dsh-plugin",
-                     "dsh-bundle",
-                     "diff",
-                     "code-review",
-                     "changes"
-                 ],
-    "exports":  {
-                    ".":  "./index.js",
-                    "./client":  "./client.js",
-                    "./locale/*.json":  "./locale/*.json",
-                    "./icon":  "./icon.svg"
-                },
-    "files":  [
-                  "index.js",
-                  "client.js",
-                  "cordis.patch.yml",
-                  "locale/*.json",
-                  "docs",
-                  "icon.svg",
-                  "README.md",
-                  "LICENSE"
-              ],
-    "dependencies":  {
-                         "@deepseek-ai/schemastery":  "~3.19.0"
-                     },
-    "engines":  {
-                    "dsh":  "\u003e=0.2.2-rc.5"
-                },
-    "dsh":  {
-                "bundle":  {
-                               "patch":  "./cordis.patch.yml"
-                           },
-                "client":  {
-                               "platform":  "web",
-                               "immediately":  true,
-                               "inject":  [
-                                              "@deepseek-ai/dsh-client-ui-conversation",
-                                              "@deepseek-ai/dsh-client-ui-sidebar-right"
-                                          ]
-                           }
-            }
+  "name": "dsh-changes",
+  "version": "1.1.0",
+  "type": "module",
+  "description": "Review each turn's file changes hunk by hunk, accept or revert them, and roll the workspace back to a Git commit or an SVN revision — a review bar above the composer plus a Changes page in the right sidebar.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Careless-prograw/dsh-changes.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Careless-prograw/dsh-changes/issues"
+  },
+  "homepage": "https://github.com/Careless-prograw/dsh-changes#readme",
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "dsh-plugin",
+    "dsh-bundle",
+    "diff",
+    "code-review",
+    "changes"
+  ],
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "docs",
+    "icon.svg",
+    "README.md",
+    "LICENSE"
+  ],
+  "dependencies": {
+    "@deepseek-ai/schemastery": "~3.19.0"
+  },
+  "engines": {
+    "dsh": ">=0.2.2-rc.5"
+  },
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-sidebar-right"
+      ]
+    }
+  }
 }

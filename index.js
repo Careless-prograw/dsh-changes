@@ -13,7 +13,9 @@
  * installed from a workspace directory resolves packages from its own
  * `node_modules` rather than from the dsh installation.
  */
-import { isAbsolute, join } from 'node:path'
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { dirname, isAbsolute, join } from 'node:path'
 import z from '@deepseek-ai/schemastery'
 
 /** Stable Loader identity. */
@@ -234,6 +236,8 @@ export function apply(ctx, config) {
   const turns = new Map()
   /** Sessions already back-filled from the durable log. */
   const backfilled = new Set()
+  /** `${sessionId}\0${seq}` pairs already copied into the persisted store. */
+  const backfilledSeqs = new Set()
   /** `${sessionId}\0${path}` -> { seq, hunks: {idx: 'accept'|'reject'}, done }. */
   const decisions = new Map()
   /** sessionId -> detected version control, probed at most once per Session. */
@@ -244,6 +248,179 @@ export function apply(ctx, config) {
   const log = (text) => {
     debugLines.push(`${new Date().toISOString()} ${text}`)
     if (debugLines.length > 200) debugLines.shift()
+  }
+
+  // --------------------------------------------------------------- persistence
+
+  /**
+   * The change summaries and hunks this plugin keeps on disk.
+   *
+   * `workspaceChanges` holds them in the Host process only, so a restart used to
+   * erase every pending change. This plugin now snapshots each announced turn —
+   * summary plus per-file comparisons — and falls back to that snapshot whenever
+   * the live recorder can no longer answer.
+   *
+   * The location follows the harness convention (`$DSH_HOME`, else `~/.dsh`), so
+   * the data sits beside the rest of the user's Harness state.
+   */
+  const STORE_VERSION = 1
+  const MAX_TURNS_PER_SESSION = 20
+  const MAX_SESSIONS = 12
+  const MAX_STORE_BYTES = 8 * 1024 * 1024
+  const MAX_DIFF_BYTES = 512 * 1024
+
+  const storePath = () => {
+    const explicit = (process.env.DSH_HOME ?? '').trim()
+    const home = explicit === '' ? join(homedir(), '.dsh') : explicit
+    return join(home, 'dsh-changes', 'state.json')
+  }
+
+  const emptyStore = () => ({ version: STORE_VERSION, sessions: {} })
+
+  const loadStore = () => {
+    try {
+      const parsed = JSON.parse(readFileSync(storePath(), 'utf8'))
+      if (parsed === null || typeof parsed !== 'object' || typeof parsed.sessions !== 'object') return emptyStore()
+      return { version: STORE_VERSION, sessions: parsed.sessions ?? {} }
+    } catch {
+      // Absent, unreadable, or an incompatible shape: start clean rather than
+      // failing the plugin.
+      return emptyStore()
+    }
+  }
+
+  const store = loadStore()
+  let storeDirty = false
+  let flushTimer
+
+  const sessionRecord = (sessionId, create = false) => {
+    let record = store.sessions[sessionId]
+    if (record === undefined && create) {
+      record = { cwd: undefined, updatedAt: 0, turns: [], diffs: {}, decisions: {} }
+      store.sessions[sessionId] = record
+    }
+    return record
+  }
+
+  const pruneStore = () => {
+    const ids = Object.keys(store.sessions)
+    if (ids.length > MAX_SESSIONS) {
+      ids
+        .sort((left, right) => (store.sessions[left]?.updatedAt ?? 0) - (store.sessions[right]?.updatedAt ?? 0))
+        .slice(0, ids.length - MAX_SESSIONS)
+        .forEach((id) => delete store.sessions[id])
+    }
+    for (const record of Object.values(store.sessions)) {
+      if (!Array.isArray(record.turns) || record.turns.length <= MAX_TURNS_PER_SESSION) continue
+      for (const dropped of record.turns.splice(0, record.turns.length - MAX_TURNS_PER_SESSION)) {
+        delete record.diffs?.[String(dropped.seq)]
+      }
+    }
+  }
+
+  const flushStore = () => {
+    clearTimeout(flushTimer)
+    flushTimer = undefined
+    if (!storeDirty) return
+    storeDirty = false
+    pruneStore()
+    const file = storePath()
+    try {
+      mkdirSync(dirname(file), { recursive: true })
+      let text = JSON.stringify(store)
+      if (text.length > MAX_STORE_BYTES) {
+        // Too big to keep whole: drop the oldest sessions until it fits.
+        const ids = Object.keys(store.sessions)
+          .sort((left, right) => (store.sessions[left]?.updatedAt ?? 0) - (store.sessions[right]?.updatedAt ?? 0))
+        while (text.length > MAX_STORE_BYTES && ids.length > 1) {
+          delete store.sessions[ids.shift()]
+          text = JSON.stringify(store)
+        }
+      }
+      const temporary = `${file}.tmp`
+      writeFileSync(temporary, text, 'utf8')
+      renameSync(temporary, file)
+    } catch (error) {
+      log(`persist failed: ${messageOf(error)}`)
+    }
+  }
+
+  const scheduleFlush = () => {
+    storeDirty = true
+    if (flushTimer !== undefined) return
+    flushTimer = setTimeout(() => {
+      flushTimer = undefined
+      flushStore()
+    }, 400)
+  }
+
+  /**
+   * Snapshot one announced turn — summary plus every file comparison — so the
+   * pending list and its hunks survive a Host restart.
+   */
+  const captureTurn = async (sessionId, seq, turn) => {
+    const recorder = ctx.get('workspaceChanges')
+    if (recorder === undefined) return
+    try {
+      const summary = recorder.summary(sessionId, seq)
+      if (summary === undefined) return
+      const record = sessionRecord(sessionId, true)
+      const files = summary.files.map((file) => ({
+        path: file.path,
+        display: file.display,
+        added: file.added,
+        deleted: file.deleted,
+        ...(file.binary === true ? { binary: true } : {}),
+        ...(file.oversized === true ? { oversized: true } : {}),
+      }))
+      record.cwd = summary.cwd
+      record.updatedAt = Date.now()
+      const at = record.turns.findIndex((entry) => entry.seq === seq)
+      const snapshot = { seq, turn: summary.turn ?? turn, files }
+      if (at >= 0) record.turns[at] = snapshot
+      else record.turns.push(snapshot)
+      record.turns.sort((left, right) => left.seq - right.seq)
+
+      const diffs = {}
+      for (let index = 0; index < summary.files.length; index += 1) {
+        const file = summary.files[index]
+        // A binary or oversized side has no comparable lines, and hunk actions
+        // never apply to it, so there is nothing worth storing beyond the kind.
+        if (file.binary === true || file.oversized === true) {
+          diffs[file.path] = { kind: file.oversized === true ? 'oversized' : 'binary' }
+          continue
+        }
+        try {
+          const diff = await recorder.diff(sessionId, seq, index, AbortSignal.timeout(5000))
+          if (diff === undefined) continue
+          if (diff.kind !== 'text') {
+            diffs[file.path] = { kind: diff.kind }
+            continue
+          }
+          const payload = { kind: 'text', before: diff.before, after: diff.after, coarse: diff.coarse === true, hunks: diff.hunks }
+          if (JSON.stringify(payload).length <= MAX_DIFF_BYTES) diffs[file.path] = payload
+        } catch {
+          // Best effort: a file whose comparison cannot be read is still listed.
+        }
+      }
+      record.diffs[String(seq)] = diffs
+      scheduleFlush()
+    } catch (error) {
+      log(`capture failed: ${messageOf(error)}`)
+    }
+  }
+
+  const persistDecision = (sessionId, path, record) => {
+    const stored = sessionRecord(sessionId, true)
+    stored.decisions[path] = { seq: record.seq, hunks: { ...record.hunks }, done: record.done === true }
+    stored.updatedAt = Date.now()
+    scheduleFlush()
+  }
+
+  const forgetPersisted = (sessionId) => {
+    if (store.sessions[sessionId] === undefined) return
+    delete store.sessions[sessionId]
+    scheduleFlush()
   }
 
   // ---------------------------------------------------------------- aggregation
@@ -268,7 +445,11 @@ export function apply(ctx, config) {
 
   ctx.on('session/event', (session, event) => {
     if (event?.type !== 'workspace/changes') return
-    recordTurn(session.id, event.seq, event.data?.turn ?? 0)
+    const turn = event.data?.turn ?? 0
+    recordTurn(session.id, event.seq, turn)
+    // The recorder publishes the summary just after the append, so the snapshot
+    // is taken a beat later — and never on the append's own stack.
+    setTimeout(() => { void captureTurn(session.id, event.seq, turn) }, 0)
   })
 
   ctx.on('session/disposed', (session) => {
@@ -279,6 +460,9 @@ export function apply(ctx, config) {
     for (const key of decisions.keys()) {
       if (key.startsWith(prefix)) decisions.delete(key)
     }
+    // The Session no longer exists, so its recorded changes are unreachable
+    // anyway; keeping them would only grow the file.
+    forgetPersisted(session.id)
   })
 
   /**
@@ -318,41 +502,100 @@ export function apply(ctx, config) {
    */
   const collect = async (sessionId) => {
     const recorder = ctx.get('workspaceChanges')
-    if (recorder === undefined) {
-      return { ok: false, code: 'no-recorder', error: '变更记录器不可用（workspaceChanges 未挂载）' }
-    }
     const map = await ensureTurns(sessionId)
-    if (map.size === 0) return { ok: true, cwd: undefined, turn: 0, files: [] }
+    const persisted = sessionRecord(sessionId)
 
-    // Chronology is the log order: a later event always describes a later or
-    // re-recorded state, so sequence decides and the turn is display only.
-    const order = [...map.entries()].sort((left, right) => left[0] - right[0])
-    const byPath = new Map()
+    // Live summaries first; the persisted snapshot fills any turn whose
+    // summary this Host process no longer holds (the restart case).
+    const live = new Map()
     let cwd
     let turn = 0
-    for (const [seq, seqTurn] of order) {
-      const summary = recorder.summary(sessionId, seq)
-      if (summary === undefined) continue
-      cwd = summary.cwd
-      if (Number.isInteger(summary.turn)) turn = Math.max(turn, summary.turn)
-      summary.files.forEach((file, index) => {
-        byPath.set(file.path, { file, seq, turn: summary.turn ?? seqTurn, index })
+    let anyLive = false
+    if (recorder !== undefined) {
+      const order = [...map.entries()].sort((left, right) => left[0] - right[0])
+      for (const [seq, seqTurn] of order) {
+        const summary = recorder.summary(sessionId, seq)
+        if (summary === undefined) continue
+        anyLive = true
+        cwd = summary.cwd
+        if (Number.isInteger(summary.turn)) turn = Math.max(turn, summary.turn)
+        live.set(seq, { turn: summary.turn ?? seqTurn, files: summary.files })
+      }
+    }
+
+    // Stored turns, ordered by sequence, filling the gaps.
+    const stored = new Map()
+    for (const entry of persisted?.turns ?? []) {
+      if (!Number.isInteger(entry?.seq) || !Array.isArray(entry.files)) continue
+      stored.set(entry.seq, entry)
+    }
+
+    // Backfill the store from live summaries this Host still holds — turns that
+    // happened before this plugin (re)activated have no event left to hook.
+    for (const [seq, summary] of live) {
+      if (stored.has(seq) || backfilledSeqs.has(`${sessionId}\u0000${seq}`)) continue
+      backfilledSeqs.add(`${sessionId}\u0000${seq}`)
+      void captureTurn(sessionId, seq, summary.turn)
+    }
+
+    const seqs = [...new Set([...live.keys(), ...stored.keys()])].sort((left, right) => left - right)
+    if (seqs.length === 0) {
+      if (recorder === undefined) {
+        return { ok: false, code: 'no-recorder', error: '变更记录器不可用（workspaceChanges 未挂载）' }
+      }
+      return { ok: true, cwd: undefined, turn: 0, files: [] }
+    }
+
+    const byPath = new Map()
+    let restoredAny = false
+    for (const seq of seqs) {
+      const fromLive = live.get(seq)
+      const fromStore = stored.get(seq)
+      const source = fromLive ?? fromStore
+      if (source === undefined) continue
+      const isRestored = fromLive === undefined
+      if (isRestored) restoredAny = true
+      const seqTurn = source.turn
+      if (Number.isInteger(seqTurn)) turn = Math.max(turn, seqTurn)
+      source.files.forEach((file, index) => {
+        byPath.set(file.path, { file, seq, turn: seqTurn, index, restored: isRestored })
       })
     }
+    if (cwd === undefined && typeof persisted?.cwd === 'string' && persisted.cwd !== '') cwd = persisted.cwd
     if (cwd === undefined) {
-      return { ok: false, code: 'stale', error: '本会话的改动汇总已随宿主重启失效' }
+      if (recorder === undefined) {
+        return { ok: false, code: 'no-recorder', error: '变更记录器不可用（workspaceChanges 未挂载）' }
+      }
+      return { ok: false, code: 'stale', error: '本会话的改动汇总已失效' }
     }
     const files = [...byPath.values()].sort((left, right) => {
       const a = left.file.display
       const b = right.file.display
       return a < b ? -1 : a > b ? 1 : 0
     })
-    return { ok: true, cwd, turn, files }
+    return { ok: true, cwd, turn, files, restored: restoredAny, live: anyLive }
   }
 
   // ------------------------------------------------------------------ decisions
 
   const decisionKey = (sessionId, path) => `${sessionId}\u0000${path}`
+
+  /** Restore the decisions a previous Host process persisted. */
+  const restoreDecisions = () => {
+    let restored = 0
+    for (const [sessionId, record] of Object.entries(store.sessions)) {
+      for (const [path, decision] of Object.entries(record?.decisions ?? {})) {
+        if (!Number.isInteger(decision?.seq)) continue
+        decisions.set(decisionKey(sessionId, path), {
+          seq: decision.seq,
+          hunks: decision.hunks ?? {},
+          done: decision.done === true,
+        })
+        restored += 1
+      }
+    }
+    if (restored > 0) log(`restored ${restored} decision(s) from disk`)
+  }
 
   /** The decision record, only while it still describes the file's current change. */
   const decisionOf = (sessionId, path, seq) => {
@@ -378,6 +621,9 @@ export function apply(ctx, config) {
     for (const key of decisions.keys()) {
       if (key.startsWith(prefix)) decisions.delete(key)
     }
+    // A whole-area rollback re-points the workspace at a version, so the
+    // recorded changes no longer describe it.
+    forgetPersisted(sessionId)
   }
 
   // ----------------------------------------------------------------- file writes
@@ -438,10 +684,19 @@ export function apply(ctx, config) {
     if (!collected.ok) return { ok: false, code: collected.code, error: collected.error }
     const entry = collected.files.find((candidate) => candidate.file.path === path)
     if (entry === undefined) return { ok: false, code: 'no-file', error: '该文件已不在改动列表中' }
+
+    // Live comparison first; the persisted snapshot answers after a restart,
+    // when this Host process no longer holds the recorder's copies.
     const recorder = ctx.get('workspaceChanges')
-    const diff = await recorder.diff(sessionId, entry.seq, entry.index, signal)
-    if (diff === undefined) return { ok: false, code: 'no-diff', error: '差异不可用（会话可能已释放）' }
-    return { ok: true, collected, entry, diff }
+    if (recorder !== undefined) {
+      const diff = await recorder.diff(sessionId, entry.seq, entry.index, signal)
+      if (diff !== undefined) return { ok: true, collected, entry, diff, restored: entry.restored === true }
+    }
+    const stored = sessionRecord(sessionId)?.diffs?.[String(entry.seq)]?.[path]
+    if (stored !== undefined) {
+      return { ok: true, collected, entry, diff: stored, restored: true }
+    }
+    return { ok: false, code: 'no-diff', error: '差异不可用（会话可能已释放）' }
   }
 
   /** Reverse-apply every hunk of one file, bottom-up, and write the result. */
@@ -491,6 +746,7 @@ export function apply(ctx, config) {
     const record = freshDecision(sessionId, entry.file.path, entry.seq)
     record.done = true
     record.file = 'reject'
+    persistDecision(sessionId, entry.file.path, record)
     return { ok: true, path: entry.file.path, hunks: diff.hunks.length }
   }
 
@@ -760,6 +1016,7 @@ export function apply(ctx, config) {
     const record = freshDecision(sessionId, entry.file.path, entry.seq)
     record.hunks[hunkIdx] = 'accept'
     settle(record, diff.kind === 'text' ? diff.hunks : [])
+    persistDecision(sessionId, entry.file.path, record)
     return { ok: true }
   }
 
@@ -798,6 +1055,7 @@ export function apply(ctx, config) {
     }
     record.hunks[hunkIdx] = 'reject'
     settle(record, diff.hunks)
+    persistDecision(sessionId, entry.file.path, record)
     return { ok: true }
   }
 
@@ -807,6 +1065,7 @@ export function apply(ctx, config) {
     const record = freshDecision(sessionId, found.entry.file.path, found.entry.seq)
     record.done = true
     record.file = 'accept'
+    persistDecision(sessionId, found.entry.file.path, record)
     return { ok: true }
   }
 
@@ -968,6 +1227,17 @@ export function apply(ctx, config) {
   // ------------------------------------------------------------------ lifecycle
 
   const nativeCard = createNativeCardController(ctx, readHideNative)
+
+  // Decisions a previous Host process made, so "已保留" does not come back as
+  // pending after a restart.
+  restoreDecisions()
+
+  ctx.effect(() => {
+    // Write whatever is still pending when this plugin unloads or the Host stops.
+    return () => {
+      flushStore()
+    }
+  }, 'dsh-changes: persisted state')
 
   ctx.effect(() => {
     void nativeCard.apply().catch((error) => log(`native card toggle failed: ${messageOf(error)}`))

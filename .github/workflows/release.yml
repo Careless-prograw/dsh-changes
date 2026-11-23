@@ -24,14 +24,12 @@ jobs:
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
 
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 11
-
+      # Node ships npm, and `npm pack` already honours the manifest's `files`.
+      # This bundle has no build step, so no package manager needs to install
+      # anything: the fewer moving parts, the fewer ways a release can fail.
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: pnpm
 
       # The version in the manifest is the only place a version is written; a
       # tag that disagrees would publish a tarball whose name lies about it.
@@ -46,12 +44,11 @@ jobs:
           fi
           echo "VERSION=$version" >> "$GITHUB_ENV"
 
-      # No build step: this bundle ships plain JavaScript, so packing is all it takes.
       - name: Pack the bundle
         run: |
           set -euo pipefail
-          pnpm install --frozen-lockfile
-          pnpm pack
+          npm pack
+          ls -l dsh-changes-*.tgz
 
       # A release asset that cannot install is worse than no release, so the
       # packed artifact is checked before it is published.
@@ -60,10 +57,11 @@ jobs:
           set -euo pipefail
           tarball="dsh-changes-${VERSION}.tgz"
           test -f "$tarball"
+          listing="$(tar -tzf "$tarball")"
           for required in package.json index.js client.js cordis.patch.yml docs/DETAIL.md icon.svg LICENSE locale/zh.json locale/en.json; do
-            tar -tzf "$tarball" | grep -qx "package/$required" || { echo "missing $required in $tarball" >&2; exit 1; }
+            echo "$listing" | grep -qx "package/$required" || { echo "missing $required in $tarball" >&2; exit 1; }
           done
-          echo "packed $tarball"
+          echo "packed $tarball with $(echo "$listing" | wc -l) entries"
 
       - name: Publish the release
         uses: softprops/action-gh-release@v2

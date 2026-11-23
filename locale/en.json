@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "Changes",
+    "description": "Review each turn's file changes hunk by hunk, accept or revert them, and roll the workspace back to a Git commit or SVN revision.",
+    "detail": "docs/DETAIL.md"
+  }
+}

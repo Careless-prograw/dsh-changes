@@ -1,0 +1,74 @@
+name: release
+
+# Pushing a v* tag publishes the prebuilt bundle:
+#   https://github.com/<owner>/<repo>/releases/download/v<version>/dsh-changes-<version>.tgz
+# which is what README tells users to install.
+on:
+  push:
+    tags: ['v*']
+  # Allows re-running a failed release without pushing a new tag.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to (re)build the release for, e.g. v1.0.0
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # The version in the manifest is the only place a version is written; a
+      # tag that disagrees would publish a tarball whose name lies about it.
+      - name: Check the tag matches package.json
+        run: |
+          set -euo pipefail
+          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          version="$(node -p "require('./package.json').version")"
+          if [ "v$version" != "$tag" ]; then
+            echo "tag $tag does not match package.json version v$version" >&2
+            exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      # No build step: this bundle ships plain JavaScript, so packing is all it takes.
+      - name: Pack the bundle
+        run: |
+          set -euo pipefail
+          pnpm install --frozen-lockfile
+          pnpm pack
+
+      # A release asset that cannot install is worse than no release, so the
+      # packed artifact is checked before it is published.
+      - name: Check the packed contents
+        run: |
+          set -euo pipefail
+          tarball="dsh-changes-${VERSION}.tgz"
+          test -f "$tarball"
+          for required in package.json index.js client.js cordis.patch.yml docs/DETAIL.md icon.svg LICENSE locale/zh.json locale/en.json; do
+            tar -tzf "$tarball" | grep -qx "package/$required" || { echo "missing $required in $tarball" >&2; exit 1; }
+          done
+          echo "packed $tarball"
+
+      - name: Publish the release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          files: dsh-changes-*.tgz
+          generate_release_notes: true
+          fail_on_unmatched_files: true

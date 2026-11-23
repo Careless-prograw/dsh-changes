@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "变更",
+    "description": "逐块审查每轮改动的文件，接受或撤销；支持 Git / SVN 整区回退。",
+    "detail": "docs/DETAIL.md"
+  }
+}

@@ -1,0 +1,9 @@
+# Keep the sources exactly as written: a Windows checkout must not rewrite the
+# LF line endings these files were authored and tested with.
+* text=auto eol=lf
+
+# Packed artifacts and images stay binary.
+*.tgz binary
+*.png binary
+*.jpg binary
+*.ico binary

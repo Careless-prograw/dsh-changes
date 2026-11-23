@@ -1,0 +1,12 @@
+# Installed dependencies (recreated by the DSH plugin installer)
+node_modules/
+
+# Local pnpm store used when developing inside a larger workspace
+.pnpm-store/
+
+# Packed artifacts
+*.tgz
+
+# Editor and OS noise
+.DS_Store
+Thumbs.db

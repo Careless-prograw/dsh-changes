@@ -1028,27 +1028,33 @@ window.__ModuleLoader__.load({
       const tools = h(
         'div',
         { className: 'dshc-tools' },
-        h('button', {
-          type: 'button',
-          className: 'dshc-btn',
-          disabled: busy !== '' || pendingCount === 0 || vcsMode,
-          title: vcsMode ? t('panel.vcsReadOnly') : '',
-          onClick: async () => {
-            const result = await run({ op: 'acceptAll' })
-            if (result?.ok === true) flash(t('bar.keptAll'), false)
-            else flash(result?.failures?.[0] ?? result?.error ?? t('panel.failed'), true)
-          },
-        }, t('panel.acceptAll')),
-        h('button', {
-          type: 'button',
-          className: 'dshc-btn',
-          disabled: busy !== '' || pendingCount === 0 || vcsMode,
-          title: vcsMode ? t('panel.vcsReadOnly') : '',
-          onClick: async () => {
-            if (!window.confirm(t('bar.confirmAll', { count: pendingCount }))) return
-            reportDrop(await run({ op: 'rejectAll' }))
-          },
-        }, t('panel.rejectAll')),
+        // Nothing pending means nothing to accept or reject: the bar is already
+        // hidden at that point, so these actions follow the same rule.
+        pendingCount === 0 || vcsMode
+          ? null
+          : h('button', {
+            type: 'button',
+            className: 'dshc-btn',
+            disabled: busy !== '' || vcsMode,
+            title: vcsMode ? t('panel.vcsReadOnly') : '',
+            onClick: async () => {
+              const result = await run({ op: 'acceptAll' })
+              if (result?.ok === true) flash(t('bar.keptAll'), false)
+              else flash(result?.failures?.[0] ?? result?.error ?? t('panel.failed'), true)
+            },
+          }, t('panel.acceptAll')),
+        pendingCount === 0 || vcsMode
+          ? null
+          : h('button', {
+            type: 'button',
+            className: 'dshc-btn',
+            disabled: busy !== '' || vcsMode,
+            title: vcsMode ? t('panel.vcsReadOnly') : '',
+            onClick: async () => {
+              if (!window.confirm(t('bar.confirmAll', { count: pendingCount }))) return
+              reportDrop(await run({ op: 'rejectAll' }))
+            },
+          }, t('panel.rejectAll')),
         // The version point to roll back to. It lives here, beside the action it
         // serves, so picking a base never replaces the whole panel.
         vcsMode

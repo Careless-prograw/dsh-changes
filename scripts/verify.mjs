@@ -57,6 +57,7 @@ const checks = {
   'vcs listing names its base': host.includes('svnWorkingCopyInfo'),
   'CRLF-safe line splitting': host.includes('split(/\\r?\\n/)'),
   'CRLF-safe status regex': host.includes('(.+?)\\r?$'),
+  'a handled file settles every hunk': host.includes('const settled = record?.done === true'),
 }
 
 for (const [label, present] of Object.entries(checks)) {
@@ -87,6 +88,7 @@ const clientChecks = {
   'vcs baseline is read-only': client.includes('panel.vcsReadOnly'),
   'diff branch guards the loading state': client.includes('if (shown === undefined)'),
   'vcs mode names the comparison base': client.includes('panel.vcsBaseSvn') && client.includes('panel.vcsBaseGit'),
+  'bulk buttons follow the pending count': client.includes('pendingCount === 0 || vcsMode'),
 }
 for (const [label, present] of Object.entries(clientChecks)) {
   console.log(`  ${present ? 'ok  ' : 'MISS'} ${label}`)

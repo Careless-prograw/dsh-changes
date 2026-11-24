@@ -1462,7 +1462,11 @@ export function apply(ctx, config) {
       }
     })
 
-    const cursor = hunks.find((hunk) => states[hunk.idx] === undefined)
+    // "Handled" settles every hunk at once: keeping a whole file records a
+    // file-level decision rather than per-hunk ones, so the panel must not still
+    // report an undecided first hunk and keep offering accept/reject.
+    const settled = record?.done === true
+    const cursor = settled ? undefined : hunks.find((hunk) => states[hunk.idx] === undefined)
     return {
       ...base,
       coarse: diff.coarse === true,
@@ -1470,7 +1474,9 @@ export function apply(ctx, config) {
       after: diff.after,
       hunks,
       cursor: cursor === undefined ? undefined : { seq: batch.seq, hunkIdx: cursor.idx },
-      progress: { decided: Object.keys(states).length, total: hunks.length },
+      progress: settled
+        ? { decided: hunks.length, total: hunks.length }
+        : { decided: Object.keys(states).length, total: hunks.length },
     }
   }
 

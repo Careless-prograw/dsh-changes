@@ -1019,6 +1019,197 @@ export function apply(ctx, config) {
     return { ok: true, kind, ref, files }
   }
 
+  /**
+   * Parse unified diff text into hunks.
+   *
+   * Both `git diff` and `svn diff` emit the same shape, so one parser serves the
+   * two baselines. Lines before the first `@@` header (file names, index lines)
+   * are skipped, and a `\ No newline at end of file` marker is dropped because it
+   * is not a line of content.
+   */
+  const parseUnifiedDiff = (text) => {
+    const hunks = []
+    let current
+    for (const line of text.split('\n')) {
+      if (line.startsWith('@@')) {
+        const match = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line)
+        if (match === null) continue
+        current = {
+          oldStart: Number(match[1]),
+          oldLines: match[2] === undefined ? 1 : Number(match[2]),
+          newStart: Number(match[3]),
+          newLines: match[4] === undefined ? 1 : Number(match[4]),
+          lines: [],
+        }
+        hunks.push(current)
+        continue
+      }
+      if (current === undefined) continue
+      if (line.startsWith('\\')) continue
+      if (line === '' ) continue
+      const head = line[0]
+      if (head !== '+' && head !== '-' && head !== ' ') continue
+      current.lines.push(line)
+    }
+    return hunks
+  }
+
+  /**
+   * Files that differ between the working copy and the repository's base state.
+   *
+   * This is what a "Git / SVN baseline" means: the same file list the review bar
+   * shows, but measured against the repository instead of the turn snapshot.
+   */
+  const vcsChangedFiles = async (sessionId, kind, signal) => {
+    const collected = await collect(sessionId)
+    if (!collected.ok) return { ok: false, code: collected.code, error: collected.error }
+    if (collected.cwd === undefined) return { ok: false, code: 'no-cwd', error: '会话没有工作目录' }
+    const detected = await detectVcs(sessionId, collected.cwd, signal)
+    if (detected.kind === null) {
+      return { ok: false, code: 'no-vcs', error: detected.reason ?? '当前工作目录不是版本控制仓库' }
+    }
+    const chosen = kind ?? detected.kind
+    if (chosen !== detected.kind) {
+      return { ok: false, code: 'no-vcs', error: `当前工作目录是 ${detected.kind.toUpperCase()} 仓库` }
+    }
+
+    if (chosen === 'git') {
+      // `git status` finds every touched path (including untracked); `--numstat`
+      // supplies the added/deleted counts the list shows.
+      const status = await runCommand(
+        collected.cwd,
+        ['git', 'status', '--porcelain=v1', '--no-renames', '--untracked-files=all'],
+        signal,
+      )
+      if (!status.ok) return { ok: false, code: 'git-failed', error: status.error }
+      const stat = await runCommand(collected.cwd, ['git', 'diff', 'HEAD', '--numstat', '--no-renames'], signal)
+      const counts = new Map()
+      if (stat.ok) {
+        for (const line of stat.stdout.split('\n')) {
+          const parts = line.split('\t')
+          if (parts.length < 3) continue
+          const added = parts[0] === '-' ? 0 : Number(parts[0])
+          const deleted = parts[1] === '-' ? 0 : Number(parts[1])
+          counts.set(parts[2], { added, deleted })
+        }
+      }
+      const files = []
+      for (const raw of status.stdout.split('\n')) {
+        if (raw.trim() === '') continue
+        const code = raw.slice(0, 2).trim()
+        const path = raw.slice(3).trim()
+        if (path === '') continue
+        const known = counts.get(path)
+        let added = known?.added
+        let deleted = known?.deleted
+        if (code === '??') {
+          // An untracked file has no HEAD side: every line is new.
+          try {
+            const text = await readTextAt(absoluteOf(collected.cwd, { path }), signal)
+            added = splitLines(text).lines.length
+            deleted = 0
+          } catch {
+            added = 0
+            deleted = 0
+          }
+        }
+        files.push({ path, display: path, status: code, added, deleted, untracked: code === '??' })
+      }
+      return { ok: true, kind, base: 'HEAD', files }
+    }
+
+    const status = await runCommand(collected.cwd, ['svn', 'status', '--non-interactive'], signal)
+    if (!status.ok) return { ok: false, code: 'svn-failed', error: status.error }
+    const files = []
+    for (const raw of status.stdout.split('\n')) {
+      if (raw.trim() === '') continue
+      const code = raw.slice(0, 1).trim()
+      const path = raw.slice(8).trim()
+      if (path === '') continue
+      files.push({ path, display: path, status: code, untracked: code === '?' })
+    }
+    return { ok: true, kind, base: 'BASE', files }
+  }
+
+  /** One file compared against the repository base, as reviewable hunks. */
+  const vcsFileDiff = async (sessionId, kind, path, signal) => {
+    const collected = await collect(sessionId)
+    if (!collected.ok) return { ok: false, code: collected.code, error: collected.error }
+    if (collected.cwd === undefined) return { ok: false, code: 'no-cwd', error: '会话没有工作目录' }
+    const detected = await detectVcs(sessionId, collected.cwd, signal)
+    if (detected.kind === null) {
+      return { ok: false, code: 'no-vcs', error: detected.reason ?? '当前工作目录不是版本控制仓库' }
+    }
+    const chosen = kind ?? detected.kind
+    if (chosen !== detected.kind) {
+      return { ok: false, code: 'no-vcs', error: `当前工作目录是 ${detected.kind.toUpperCase()} 仓库` }
+    }
+    const display = path
+    if (chosen === 'git') {
+      // An untracked file has no base to diff against, so it reads as one
+      // whole-file addition.
+      const check = await runCommand(
+        collected.cwd,
+        ['git', 'status', '--porcelain=v1', '--no-renames', '--', path],
+        signal,
+      )
+      const untracked = check.ok && check.stdout.split('\n').some((line) => line.startsWith('??'))
+      if (untracked) {
+        try {
+          const text = await readTextAt(absoluteOf(collected.cwd, { path }), signal)
+          const split = splitLines(text)
+          const lines = split.lines.map((line) => `+${line}`)
+          return {
+            ok: true,
+            kind,
+            base: 'HEAD',
+            path,
+            display,
+            diffKind: 'text',
+            untracked: true,
+            hunks: lines.length === 0 ? [] : [{
+              oldStart: 0,
+              oldLines: 0,
+              newStart: 1,
+              newLines: lines.length,
+              lines,
+            }],
+          }
+        } catch (error) {
+          return { ok: false, code: 'read-failed', error: `读取失败：${messageOf(error)}` }
+        }
+      }
+      const run = await runCommand(collected.cwd, ['git', 'diff', 'HEAD', '--unified=3', '--no-renames', '--', path], signal)
+      if (!run.ok) return { ok: false, code: 'git-failed', error: run.error }
+      return {
+        ok: true,
+        kind,
+        base: 'HEAD',
+        path,
+        display,
+        diffKind: 'text',
+        untracked: false,
+        hunks: parseUnifiedDiff(run.stdout),
+      }
+    }
+    const run = await runCommand(collected.cwd, ['svn', 'diff', '--non-interactive', path], signal)
+    if (!run.ok) return { ok: false, code: 'svn-failed', error: run.error }
+    const text = run.stdout
+    if (text.includes('Cannot display:') || text.includes('(binary)')) {
+      return { ok: true, kind, base: 'BASE', path, display, diffKind: 'binary', untracked: false, hunks: [] }
+    }
+    return {
+      ok: true,
+      kind,
+      base: 'BASE',
+      path,
+      display,
+      diffKind: 'text',
+      untracked: false,
+      hunks: parseUnifiedDiff(text),
+    }
+  }
+
   const rollback = async (sessionId, kind, ref, signal) => {
     const collected = await collect(sessionId)
     if (!collected.ok) return { ok: false, code: collected.code, error: collected.error }
@@ -1409,6 +1600,16 @@ export function apply(ctx, config) {
         case `${NS}/refs`: {
           const kind = url.searchParams.get('kind') ?? undefined
           return json(await listRefs(sessionId, kind, signal))
+        }
+        case `${NS}/vcs-state`: {
+          const kind = url.searchParams.get('kind') ?? undefined
+          return json(await vcsChangedFiles(sessionId, kind, signal))
+        }
+        case `${NS}/vcs-diff`: {
+          const path = url.searchParams.get('path') ?? ''
+          const kind = url.searchParams.get('kind') ?? undefined
+          if (path === '') return json({ ok: false, error: '缺少 path' }, 400)
+          return json(await vcsFileDiff(sessionId, kind, path, signal))
         }
         case `${NS}/ref-files`: {
           const kind = url.searchParams.get('kind') ?? 'git'

@@ -48,6 +48,10 @@ const checks = {
   // vcs
   'vcs says why it is unavailable': host.includes("code: 'no-vcs'") && host.includes('detected.reason'),
   'git refs command': host.includes("'git', 'log', '-20'"),
+  'vcs baseline lists changed files': host.includes('const vcsChangedFiles = async'),
+  'vcs baseline diffs one file': host.includes('const vcsFileDiff = async'),
+  'unified diff parser': host.includes('const parseUnifiedDiff = (text)'),
+  'untracked file is a whole-file add': host.includes('untracked: true'),
 }
 
 for (const [label, present] of Object.entries(checks)) {
@@ -74,6 +78,8 @@ const clientChecks = {
   'code text is hue-matched, lightness-shifted': client.includes('color-mix(in srgb, var(--dshc-marker) 58%'),
   'code text never uses a flat diff token': !client.includes('code-diff-added') && !client.includes('code-diff-deleted'),
   'gutter and sign carry the colour': client.includes('--dshc-marker') && client.includes('dshc-line__sign'),
+  'baseline swaps the source, not the layout': client.includes('vcs-state') && client.includes('vcs-diff') && !client.includes('const refList = h('),
+  'vcs baseline is read-only': client.includes('panel.vcsReadOnly'),
 }
 for (const [label, present] of Object.entries(clientChecks)) {
   console.log(`  ${present ? 'ok  ' : 'MISS'} ${label}`)

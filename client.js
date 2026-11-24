@@ -163,6 +163,8 @@ window.__ModuleLoader__.load({
         'panel.restored': 'Restored from a previous run',
         'panel.restoredBadge': 'restored',
         'panel.rollbackHint': 'Rolling back forces the workspace onto the chosen version and discards everything after it. Switch to a Git / SVN baseline and pick a version point first.',
+        'panel.vcsReadOnly': 'A VCS baseline is read-only comparison; switch back to the session snapshot to accept or revert',
+        'panel.vcsBase': 'compared with {base}',
         'panel.rollbackConfirm': 'Force the workspace to {ref}? Every change after that version is discarded and cannot be recovered.',
         'panel.rolledBack': 'Rolled back to {ref}',
         'panel.refEmpty': 'No version points',
@@ -837,18 +839,24 @@ window.__ModuleLoader__.load({
         if (focus.path !== '') setSelected({ path: focus.path, seq: undefined })
       }, [focus.rev])
 
-      // One row per file: a file stays pending while ANY batch that touched it
-      // is unconfirmed, so the list never repeats a path.
-      const files = data?.ok === true ? data.files ?? [] : []
-
-      useEffect(() => {
-        if (selected.path !== '') return
-        const first = files.find((file) => !file.handled) ?? files[0]
-        if (first !== undefined) setSelected({ path: first.path, seq: undefined })
-      }, [files.length, data?.ok])
-
       const vcs = data?.vcs ?? { kind: null, reason: '' }
       const vcsKind = vcs.kind === 'git' || vcs.kind === 'svn' ? vcs.kind : null
+      const vcsMode = baseline !== 'snapshot' && vcsKind !== null
+
+      // The left column lists the same kind of thing in both modes — files — but
+      // measured against a different base: the turn snapshot, or the repository.
+      const vcsStateLive = useLive(vcsMode, sessionId, 'vcs-state', { kind: vcsKind ?? '' }, 4000, nonce)
+      const snapshotFiles = data?.ok === true ? data.files ?? [] : []
+      const files = vcsMode
+        ? (vcsStateLive.data?.ok === true ? vcsStateLive.data.files ?? [] : [])
+        : snapshotFiles
+
+      useEffect(() => {
+        // A different base means a different set of files: drop a stale selection.
+        if (selected.path !== '' && files.some((file) => file.path === selected.path)) return
+        const first = files.find((file) => !file.handled) ?? files[0]
+        setSelected({ path: first?.path ?? '', seq: undefined })
+      }, [files.length, data?.ok, baseline])
 
       // One continuous diff of the whole file, annotated per hunk by the round
       // that first introduced it.
@@ -861,15 +869,42 @@ window.__ModuleLoader__.load({
         nonce,
       )
       const diff = diffLive.data
-      const refsLive = useLive(baseline !== 'snapshot' && vcsKind !== null, sessionId, 'refs', { kind: vcsKind ?? '' }, 60000, nonce)
-      const refFilesLive = useLive(baseline !== 'snapshot' && ref !== '', sessionId, 'ref-files', { kind: vcsKind ?? '', ref }, 60000, nonce)
+      // A Git / SVN baseline compares the working copy against the repository
+      // instead of the turn snapshot. It keeps the same two-column layout: the
+      // file list and one file's diff — only the comparison base changes.
+      const vcsDiffLive = useLive(
+        vcsMode && selected.path !== '',
+        sessionId,
+        'vcs-diff',
+        { kind: vcsKind ?? '', path: selected.path },
+        4000,
+        nonce,
+      )
+      const refsLive = useLive(vcsMode, sessionId, 'refs', { kind: vcsKind ?? '' }, 60000, nonce)
+      const refFilesLive = useLive(false, sessionId, 'ref-files', { kind: vcsKind ?? '', ref }, 60000, nonce)
+
+      // The baseline decides which diff the panel shows.
+      const vcsDiff = vcsDiffLive.data
+      const shown = vcsMode
+        ? (vcsDiff?.ok === true
+          ? {
+            ok: true,
+            kind: vcsDiff.diffKind,
+            hunks: vcsDiff.hunks ?? [],
+            display: vcsDiff.display ?? selected.path,
+            states: {},
+            cursor: undefined,
+            progress: { decided: 0, total: (vcsDiff.hunks ?? []).length },
+          }
+          : vcsDiff)
+        : diff
 
       const hunks = useMemo(
-        () => (diff?.ok === true && diff.kind === 'text' ? diff.hunks ?? [] : []),
-        [diff],
+        () => (shown?.ok === true && shown.kind === 'text' ? shown.hunks ?? [] : []),
+        [shown],
       )
-      const current = diff?.ok === true ? diff.cursor : undefined
-      const progress = diff?.ok === true ? diff.progress ?? { decided: 0, total: 0 } : { decided: 0, total: 0 }
+      const current = vcsMode ? undefined : (shown?.ok === true ? shown.cursor : undefined)
+      const progress = shown?.ok === true ? shown.progress ?? { decided: 0, total: 0 } : { decided: 0, total: 0 }
 
       // Fold state per untouched region: keyed by position so expanding one does
       // not disturb the others. Collapsed by default, like an SVN diff.
@@ -877,7 +912,7 @@ window.__ModuleLoader__.load({
       // The file text is needed for every fold — its line count decides how many
       // lines each untouched region hides, and expanding renders the real lines.
       const fileText = useLive(
-        baseline === 'snapshot' && selected.path !== '',
+        selected.path !== '',
         sessionId,
         'file',
         { path: selected.path },
@@ -987,7 +1022,8 @@ window.__ModuleLoader__.load({
         h('button', {
           type: 'button',
           className: 'dshc-btn',
-          disabled: busy !== '' || pendingCount === 0,
+          disabled: busy !== '' || pendingCount === 0 || vcsMode,
+          title: vcsMode ? t('panel.vcsReadOnly') : '',
           onClick: async () => {
             const result = await run({ op: 'acceptAll' })
             if (result?.ok === true) flash(t('bar.keptAll'), false)
@@ -997,17 +1033,37 @@ window.__ModuleLoader__.load({
         h('button', {
           type: 'button',
           className: 'dshc-btn',
-          disabled: busy !== '' || pendingCount === 0,
+          disabled: busy !== '' || pendingCount === 0 || vcsMode,
+          title: vcsMode ? t('panel.vcsReadOnly') : '',
           onClick: async () => {
             if (!window.confirm(t('bar.confirmAll', { count: pendingCount }))) return
             reportDrop(await run({ op: 'rejectAll' }))
           },
         }, t('panel.rejectAll')),
+        // The version point to roll back to. It lives here, beside the action it
+        // serves, so picking a base never replaces the whole panel.
+        vcsMode
+          ? h(
+            'select',
+            {
+              className: 'dshc-select',
+              value: ref,
+              'aria-label': t('panel.pickRefFirst'),
+              title: t('panel.rollbackHint'),
+              onChange: (event) => setRef(event.target.value),
+            },
+            h('option', { value: '' }, t('panel.refPick')),
+            vcsRefs.slice(0, 50).map((item) => h(
+              'option',
+              { key: item.id, value: item.id },
+              item.label === '' ? item.id : `${item.id} ${item.label}`.slice(0, 80),
+            )),
+          )
+          : null,
         h('button', {
           type: 'button',
           className: 'dshc-btn dshc-btn--danger',
           disabled: busy !== '' || baseline === 'snapshot' || ref === '',
-          title: baseline === 'snapshot' ? t('panel.rollbackHint') : ref === '' ? t('panel.pickRefFirst') : '',
           onClick: async () => {
             if (!window.confirm(t('panel.rollbackConfirm', { ref }))) return
             const result = await run({ op: 'rollback', kind: baseline, ref })
@@ -1025,76 +1081,6 @@ window.__ModuleLoader__.load({
           : null,
       )
 
-      if (baseline !== 'snapshot') {
-        const refList = h(
-          'div',
-          { className: 'dshc-files' },
-          vcsRefs.length === 0
-            ? h('div', { className: 'dshc-placeholder' }, refsLive.loading ? t('panel.loading') : t('panel.refEmpty'))
-            : vcsRefs.map((item) => h(
-              'button',
-              {
-                key: item.id,
-                type: 'button',
-                className: 'dshc-file',
-                'data-selected': item.id === ref,
-                title: item.label,
-                onClick: () => setRef(item.id),
-              },
-              h('span', { className: 'dshc-chip' }, item.id),
-              h('span', { className: 'dshc-file__path' }, item.label || item.id),
-            )),
-        )
-        const REF_FILE_LIMIT = 200
-        const shownRefFiles = selectedRefFiles.slice(0, REF_FILE_LIMIT)
-        const refPanel = h(
-          'div',
-          { className: 'dshc-diff' },
-          h(
-            'div',
-            { className: 'dshc-diff__head' },
-            h('span', { className: 'dshc-diff__path' }, ref === '' ? t('panel.refPick') : ref),
-          ),
-          ref === ''
-            ? h('div', { className: 'dshc-placeholder' }, t('panel.refPick'))
-            : selectedRefFiles.length === 0
-              ? h('div', { className: 'dshc-placeholder' }, refFilesLive.loading ? t('panel.loading') : t('panel.empty'))
-              : h(
-                'div',
-                { className: 'dshc-files', style: { width: '100%', borderRight: 'none' } },
-                shownRefFiles.map((file, index) => h(
-                  'button',
-                  {
-                    key: `${index}:${file.display}`,
-                    type: 'button',
-                    className: 'dshc-file',
-                    title: file.display,
-                    onClick: () => {
-                      setBaseline('snapshot')
-                      setSelected({ path: file.display, seq: undefined })
-                    },
-                  },
-                  h('span', { className: 'dshc-chip' }, file.status),
-                  h('span', { className: 'dshc-file__path' }, file.display),
-                )),
-                selectedRefFiles.length > REF_FILE_LIMIT
-                  ? h('div', { className: 'dshc-placeholder' }, t('panel.refTooMany', {
-                    shown: REF_FILE_LIMIT,
-                    rest: selectedRefFiles.length - REF_FILE_LIMIT,
-                  }))
-                  : null,
-              ),
-        )
-        return h(
-          'div',
-          { className: 'dshc-panel' },
-          h(Styles),
-          head,
-          tools,
-          error !== '' ? h('div', { className: 'dshc-error' }, error) : null,
-          h('div', { className: 'dshc-body' }, refList, refPanel),
-        )
-      }
 
       if (files.length === 0) {
         return h(
@@ -1146,37 +1132,37 @@ window.__ModuleLoader__.load({
       if (diff === undefined) {
         diffHead = h('div', { className: 'dshc-diff__head' }, h('span', { className: 'dshc-diff__path' }, shorten(selected.path)))
         diffBody = h('div', { className: 'dshc-placeholder' }, t('panel.loading'))
-      } else if (diff.ok === false) {
+        } else if (shown.ok === false) {
         diffHead = h(
           'div',
           { className: 'dshc-diff__head' },
-          h('span', { className: 'dshc-diff__path' }, diff.path ?? shorten(selected.path)),
+          h('span', { className: 'dshc-diff__path' }, shown.path ?? shorten(selected.path)),
         )
-        diffBody = h('div', { className: 'dshc-placeholder' }, diff.error ?? t('panel.diffUnavailable'))
-      } else if (diff.kind === 'binary' || diff.kind === 'oversized' || diff.coarse === true || hunks.length === 0) {
+        diffBody = h('div', { className: 'dshc-placeholder' }, shown.error ?? t('panel.diffUnavailable'))
+        } else if (shown.kind === 'binary' || shown.kind === 'oversized' || shown.coarse === true || hunks.length === 0) {
         // Nothing hunk-level to review: only file-level actions apply.
         diffHead = h(
           'div',
           { className: 'dshc-diff__head' },
-          h('span', { className: 'dshc-diff__path' }, diff.display ?? shorten(selected.path)),
-          h('span', { className: 'dshc-progress' }, diff.kind === 'text' && hunks.length === 0 ? t('panel.noHunks') : ''),
+          h('span', { className: 'dshc-diff__path' }, shown.display ?? shorten(selected.path)),
+          h('span', { className: 'dshc-progress' }, shown.kind === 'text' && hunks.length === 0 ? t('panel.noHunks') : ''),
           h('span', { className: 'dshc-spacer' }),
-          acceptFileButton(diff.path),
+          acceptFileButton(shown.path),
         )
         diffBody = h(
           'div',
           { className: 'dshc-placeholder' },
-          diff.kind === 'binary'
+          shown.kind === 'binary'
             ? t('panel.binary')
-            : diff.kind === 'oversized'
+            : shown.kind === 'oversized'
               ? t('panel.oversized')
-              : diff.coarse === true ? t('panel.coarse') : t('panel.noHunks'),
+              : shown.coarse === true ? t('panel.coarse') : t('panel.noHunks'),
         )
       } else {
         diffHead = h(
           'div',
           { className: 'dshc-diff__head' },
-          h('span', { className: 'dshc-diff__path' }, diff.display ?? shorten(selected.path)),
+          h('span', { className: 'dshc-diff__path' }, shown.display ?? shorten(selected.path)),
           h('span', { className: 'dshc-progress' }, current === undefined
             ? t('panel.allHandled')
             : t('panel.hunkProgress', { index: progress.decided + 1, total: progress.total })),
@@ -1186,7 +1172,7 @@ window.__ModuleLoader__.load({
               type: 'button',
               className: 'dshc-btn',
               disabled: busy !== '',
-              onClick: () => run({ op: 'acceptHunk', path: diff.path, hunkIdx: current.hunkIdx }),
+              onClick: () => run({ op: 'acceptHunk', path: shown.path, hunkIdx: current.hunkIdx }),
             }, t('panel.accept')),
           current === undefined
             ? null
@@ -1194,7 +1180,7 @@ window.__ModuleLoader__.load({
               type: 'button',
               className: 'dshc-btn dshc-btn--danger',
               disabled: busy !== '',
-              onClick: () => run({ op: 'rejectHunk', path: diff.path, hunkIdx: current.hunkIdx }),
+              onClick: () => run({ op: 'rejectHunk', path: shown.path, hunkIdx: current.hunkIdx }),
             }, t('panel.reject')),
         )
 
@@ -1248,18 +1234,18 @@ window.__ModuleLoader__.load({
           // that changes: repeating "第 6 次改动" above every hunk of the same
           // change just adds headers. The tag rides in the header line, so it
           // never overlaps on scroll and never becomes part of a code line.
-          const rounds = diff.rounds ?? 1
+          const rounds = shown.rounds ?? 1
           const ordinal = hunk.round ?? rounds
           const showTag = rounds > 1 && ordinal !== lastTagged
           if (showTag) lastTagged = ordinal
           rows.push(h(HunkView, {
             key: `hunk-${hunk.idx}`,
             hunk,
-            state: diff.states?.[hunk.idx],
+            state: shown.states?.[hunk.idx],
             active: current !== undefined && current.hunkIdx === hunk.idx,
             round: showTag ? ordinal : undefined,
             originTurn: hunk.originTurn,
-            coarse: diff.coarse === true,
+            coarse: shown.coarse === true,
           }))
           previousEnd = hunk.newStart + hunk.newLines
         })

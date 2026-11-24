@@ -865,15 +865,20 @@ window.__ModuleLoader__.load({
       // sessions' edits too, so listing it would review somebody else's changes.
       const snapshotFiles = data?.ok === true ? data.files ?? [] : []
       const files = snapshotFiles
+      // Split once, up front: the list, the counts and the "nothing pending"
+      // branch all read the same two arrays.
+      const pendingFiles = files.filter((file) => !file.handled)
+      const handledFiles = files.filter((file) => file.handled === true)
       const vcsInfoLive = useLive(vcsMode, sessionId, 'vcs-info', { kind: vcsKind ?? '' }, 60000, nonce)
 
       useEffect(() => {
-        // A different base means the same files but a different diff; keep the
-        // selection when it is still in the list.
-        if (selected.path !== '' && files.some((file) => file.path === selected.path)) return
-        const first = files.find((file) => !file.handled) ?? files[0]
+        // Only rows that are actually on screen may be selected; when nothing is
+        // pending the panel shows its "nothing to review" state instead of a diff.
+        const visible = showHandled ? files : files.filter((file) => !file.handled)
+        if (selected.path !== '' && visible.some((file) => file.path === selected.path)) return
+        const first = visible.find((file) => !file.handled) ?? visible[0]
         setSelected({ path: first?.path ?? '', seq: undefined })
-      }, [files.length, data?.ok, baseline])
+      }, [files.length, data?.ok, baseline, showHandled])
 
       // One continuous diff of the whole file, annotated per hunk by the round
       // that first introduced it.
@@ -923,7 +928,11 @@ window.__ModuleLoader__.load({
       const current = vcsMode ? undefined : (shown?.ok === true ? shown.cursor : undefined)
       const progress = shown?.ok === true ? shown.progress ?? { decided: 0, total: 0 } : { decided: 0, total: 0 }
 
-      // Handled files are hidden by default so the list length equals the pending\n      // count the bar and the badge show.\n      const [showHandled, setShowHandled] = useState(false)\n\n      // Fold state per untouched region: keyed by position so expanding one does
+      // Handled files are hidden by default so the list length equals the pending
+      // count the bar and the badge show.
+      const [showHandled, setShowHandled] = useState(false)
+
+      // Fold state per untouched region: keyed by position so expanding one does
       // not disturb the others. Collapsed by default, like an SVN diff.
       const [expanded, setExpanded] = useState({})
       // The file text is needed for every fold — its line count decides how many
@@ -1163,8 +1172,6 @@ window.__ModuleLoader__.load({
       // The list matches the bar and the badge: what is still pending. Files that
       // were already kept stay reachable behind a toggle instead of inflating the
       // list — the count and the rows then always agree.
-      const pendingFiles = files.filter((file) => !file.handled)
-      const handledFiles = files.filter((file) => file.handled === true)
       const visibleFiles = showHandled ? [...pendingFiles, ...handledFiles] : pendingFiles
 
       const fileRow = (file) => h(

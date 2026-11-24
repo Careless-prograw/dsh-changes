@@ -1,5 +1,13 @@
 # 更新记录
 
+## 1.6.3
+
+修 1.6.2 引入的面板崩溃：`Cannot access 'pendingFiles' before initialization`。
+
+- 原因：把"无待审时提前返回"的判断写在了 `pendingFiles` 声明之前，触发暂时性死区；同一处还有一行注释被写成了字面量 `\n`，导致 `showHandled` 根本没有声明。面板因此整个打不开。
+- 现在 `pendingFiles` / `handledFiles` 在 `files` 之后立即计算，列表、计数与"无待审"分支共用这两个数组。
+- **新增客户端渲染冒烟测试** `scripts/test-render.mjs`：用最小 React 替身执行真实的插件工厂、跑一遍 `apply(ctx)`、再调用注册到 4 个槽位上的渲染函数。这类"HTTP 接口正常但界面白屏/报错"的问题，此前测不出来——上一版就是这样漏出去的。
+
 ## 1.6.2
 
 **文件列表改为只列待审文件，与待审条和徽标口径一致。**

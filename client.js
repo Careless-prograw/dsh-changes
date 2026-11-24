@@ -409,6 +409,10 @@ window.__ModuleLoader__.load({
 .dshc-line[data-kind="del"]{--dshc-gutter:var(--dsw-alias-file-diff-deleted-gutter,rgba(240,112,112,.18));--dshc-marker:var(--dsw-alias-file-diff-deleted-marker,#f07070);background:var(--dsw-alias-file-diff-deleted-bg,rgba(240,112,112,.12))}
 .dshc-line[data-kind="add"] .dshc-line__no,.dshc-line[data-kind="del"] .dshc-line__no{background:var(--dshc-gutter);color:var(--dshc-marker);font-weight:600}
 .dshc-line[data-kind="add"] .dshc-line__sign,.dshc-line[data-kind="del"] .dshc-line__sign{color:var(--dshc-marker);font-weight:700}
+/* Code text keeps the add/remove hue but is lifted toward the primary label, so
+   it separates from its own row tint by lightness instead of matching it. The
+   mix resolves per theme: lighter on a dark surface, darker on a light one. */
+.dshc-line[data-kind="add"] .dshc-line__txt,.dshc-line[data-kind="del"] .dshc-line__txt{color:color-mix(in srgb, var(--dshc-marker) 58%, var(--dsw-alias-label-primary,#f2f3f5))}
 .dshc-placeholder{padding:16px 14px;font-size:12px;color:var(--dsw-alias-label-secondary,#9aa0ad);line-height:1.6}
 .dshc-error{padding:8px 12px;font-size:12px;color:var(--dsw-alias-state-error-primary,#f07070);border-bottom:1px solid var(--dsw-alias-border-l2,#303239);display:flex;gap:8px;align-items:center}
 .dshc-chip{flex:none;font-family:var(--dsw-font-mono,ui-monospace,Menlo,Consolas,monospace);font-size:10.5px;color:var(--dsw-alias-label-secondary,#9aa0ad);border:1px solid var(--dsw-alias-border-l2,#303239);border-radius:var(--dsw-radius-xs,4px);padding:0 4px}

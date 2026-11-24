@@ -69,7 +69,8 @@ const clientChecks = {
   'turn survives in the tooltip': client.includes('turn: originTurn'),
   'no sticky rows in the diff': !client.includes('position:sticky'),
   'fold bar for unchanged lines': client.includes("className: 'dshc-fold'"),
-  'code text keeps primary colour': !client.includes('code-diff-added') && !client.includes('code-diff-deleted'),
+  'code text is hue-matched, lightness-shifted': client.includes('color-mix(in srgb, var(--dshc-marker) 58%'),
+  'code text never uses a flat diff token': !client.includes('code-diff-added') && !client.includes('code-diff-deleted'),
   'gutter and sign carry the colour': client.includes('--dshc-marker') && client.includes('dshc-line__sign'),
 }
 for (const [label, present] of Object.entries(clientChecks)) {

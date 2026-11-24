@@ -75,6 +75,8 @@ window.__ModuleLoader__.load({
         'diff.expand': '展开未改动的行',
         'diff.fold': '收起未改动的行',
         'diff.foldHint': '收起',
+        'diff.foldUnavailable': '内容过大，未提供文件全文',
+        'diff.foldedUnknown': '⋯ 未改动的 {count} 行',
         'panel.round': '第 {turn} 轮改动',
         'panel.roundShort': '第 {count} 次改动',
         'panel.roundHint': '这一块来自对该文件的第 {count} 次改动（发生在对话第 {turn} 轮）',
@@ -152,6 +154,8 @@ window.__ModuleLoader__.load({
         'diff.expand': 'Expand unchanged lines',
         'diff.fold': 'Collapse unchanged lines',
         'diff.foldHint': 'collapse',
+        'diff.foldUnavailable': 'File text unavailable for this size',
+        'diff.foldedUnknown': '⋯ {count} unchanged line(s)',
         'panel.round': 'Turn {turn}',
         'panel.roundShort': 'change {count}',
         'panel.roundHint': 'From change {count} to this file (conversation turn {turn})',
@@ -867,11 +871,13 @@ window.__ModuleLoader__.load({
       const current = diff?.ok === true ? diff.cursor : undefined
       const progress = diff?.ok === true ? diff.progress ?? { decided: 0, total: 0 } : { decided: 0, total: 0 }
 
-      // Fold state per hunk gap: keyed by the gap's index so expanding one does
+      // Fold state per untouched region: keyed by position so expanding one does
       // not disturb the others. Collapsed by default, like an SVN diff.
       const [expanded, setExpanded] = useState({})
+      // The file text is needed for every fold — its line count decides how many
+      // lines each untouched region hides, and expanding renders the real lines.
       const fileText = useLive(
-        baseline === 'snapshot' && selected.path !== '' && Object.keys(expanded).some((key) => expanded[key] === true),
+        baseline === 'snapshot' && selected.path !== '',
         sessionId,
         'file',
         { path: selected.path },
@@ -1192,41 +1198,52 @@ window.__ModuleLoader__.load({
             }, t('panel.reject')),
         )
 
-        // One continuous list in file order. Between hunks the untouched region
-        // is folded into a single expandable row, the way an SVN diff collapses
-        // unchanged text; the row states how many lines it hides.
+        // One continuous list in file order. Every untouched region — before the
+        // first hunk, between hunks, and after the last one — folds into a single
+        // expandable row, the way an SVN diff collapses unchanged text. A file
+        // whose change is one isolated hunk still gets the two large folds around
+        // it, which is why folding is no longer hit-or-miss.
         const rows = []
         let previousEnd = 1
         // The change ordinal last labelled, so consecutive hunks of the same
         // change share one tag instead of repeating it.
         let lastTagged
-        hunks.forEach((hunk, index) => {
-          const gap = hunk.newStart - previousEnd
-          if (index > 0 && gap > 0) {
-            const key = `gap-${index}`
-            const open = expanded[key] === true
-            rows.push(h('button', {
-              key,
-              type: 'button',
-              className: 'dshc-fold',
-              onClick: () => setExpanded((value) => ({ ...value, [key]: !open })),
-              title: open ? t('diff.fold') : t('diff.expand'),
+        // Total lines of the file on the new side; unknown until the text arrives.
+        const totalLines = fileLines.length
+
+        const pushFold = (key, from, to) => {
+          const count = to - from + 1
+          if (count <= 0) return
+          const open = expanded[key] === true
+          const known = totalLines >= to
+          rows.push(h('button', {
+            key,
+            type: 'button',
+            className: 'dshc-fold',
+            disabled: !known,
+            title: known ? (open ? t('diff.fold') : t('diff.expand')) : t('diff.foldUnavailable'),
+            onClick: () => {
+              if (!known) return
+              setExpanded((value) => ({ ...value, [key]: !open }))
             },
-            h('span', { className: 'dshc-fold__sign' }, open ? '⌃' : '⋯'),
-            h('span', null, open ? t('diff.foldHint') : t('diff.folded', { count: gap })),
+          },
+          h('span', { className: 'dshc-fold__sign' }, open && known ? '⌃' : '⋯'),
+          h('span', null, known
+            ? (open ? t('diff.foldHint') : t('diff.folded', { count }))
+            : t('diff.foldedUnknown', { count })),
+          ))
+          if (!open || !known) return
+          for (let line = from; line <= to; line += 1) {
+            rows.push(h('div', { key: `${key}-${line}`, className: 'dshc-line', 'data-kind': 'ctx' },
+              h('span', { className: 'dshc-line__no' }, String(line)),
+              h('span', { className: 'dshc-line__sign' }, ' '),
+              h('span', { className: 'dshc-line__txt' }, fileLines[line - 1] ?? ''),
             ))
-            if (open) {
-              const from = previousEnd
-              const to = hunk.newStart - 1
-              for (let line = from; line <= to; line += 1) {
-                rows.push(h('div', { key: `gap-${index}-${line}`, className: 'dshc-line', 'data-kind': 'ctx' },
-                  h('span', { className: 'dshc-line__no' }, String(line)),
-                  h('span', { className: 'dshc-line__sign' }, ' '),
-                  h('span', { className: 'dshc-line__txt' }, fileLines[line - 1] ?? ''),
-                ))
-              }
-            }
           }
+        }
+
+        hunks.forEach((hunk, index) => {
+          pushFold(`gap-${index}`, previousEnd, hunk.newStart - 1)
           // A tag names the change a hunk belongs to, so it is drawn only when
           // that changes: repeating "第 6 次改动" above every hunk of the same
           // change just adds headers. The tag rides in the header line, so it
@@ -1246,6 +1263,8 @@ window.__ModuleLoader__.load({
           }))
           previousEnd = hunk.newStart + hunk.newLines
         })
+        // The region after the last hunk, up to the end of the file.
+        if (totalLines >= previousEnd) pushFold('tail', previousEnd, totalLines)
         diffBody = h('div', { className: 'dshc-diff__body' }, rows)
       }
 

@@ -40,8 +40,6 @@ window.__ModuleLoader__.load({
         'bar.failed': '操作失败',
         'bar.retry': '重试',
         'bar.droppedSome': '已撤销 {handled} 个文件，{skipped} 个二进制 / 超大文件只能保留',
-        'bar.queueBadge': '+{count} 批',
-        'bar.queueHint': '还有 {count} 批待审，处理完当前这批后依次出现',
         'bar.empty': '本会话改动已全部处理',
         'bar.broken': '变更记录器不可用，暂时无法提供改动提示',
         'bar.keepOne': '已保留 {name}',
@@ -73,7 +71,10 @@ window.__ModuleLoader__.load({
         'panel.pickRefFirst': '先选择一个版本点',
         'panel.refTooMany': '仅显示前 {shown} 个，还有 {rest} 个',
         'panel.rounds': '{count} 轮改动',
-        'panel.roundsHint': '该文件被 {count} 轮改动过，下方按轮次分块标注',
+        'diff.folded': '⋯ 未改动的 {count} 行',
+        'diff.expand': '展开未改动的行',
+        'diff.fold': '收起未改动的行',
+        'diff.foldHint': '收起',
         'panel.round': '第 {turn} 轮改动',
         'panel.restored': '来自上一次运行的存档',
         'panel.restoredBadge': '存档',
@@ -113,8 +114,6 @@ window.__ModuleLoader__.load({
         'bar.failed': 'The action failed',
         'bar.retry': 'Retry',
         'bar.droppedSome': 'Reverted {handled} files; {skipped} binary or oversized files can only be kept',
-        'bar.queueBadge': '+{count} more',
-        'bar.queueHint': '{count} more batch(es) queued; each appears once this one is cleared',
         'bar.empty': 'Every change in this session has been handled',
         'bar.broken': 'The change recorder is unavailable, so there is nothing to review',
         'bar.keepOne': 'Kept {name}',
@@ -146,7 +145,10 @@ window.__ModuleLoader__.load({
         'panel.pickRefFirst': 'Pick a version point first',
         'panel.refTooMany': 'Showing the first {shown}; {rest} more',
         'panel.rounds': '{count} rounds',
-        'panel.roundsHint': 'Touched by {count} rounds; blocks below are labelled by round',
+        'diff.folded': '⋯ {count} unchanged line(s)',
+        'diff.expand': 'Expand unchanged lines',
+        'diff.fold': 'Collapse unchanged lines',
+        'diff.foldHint': 'collapse',
         'panel.round': 'Turn {turn}',
         'panel.restored': 'Restored from a previous run',
         'panel.restoredBadge': 'restored',
@@ -398,6 +400,9 @@ window.__ModuleLoader__.load({
 .dshc-placeholder{padding:16px 14px;font-size:12px;color:var(--dsw-alias-label-secondary,#9aa0ad);line-height:1.6}
 .dshc-error{padding:8px 12px;font-size:12px;color:var(--dsw-alias-state-error-primary,#f07070);border-bottom:1px solid var(--dsw-alias-border-l2,#303239);display:flex;gap:8px;align-items:center}
 .dshc-chip{flex:none;font-family:var(--dsw-font-mono,ui-monospace,Menlo,Consolas,monospace);font-size:10.5px;color:var(--dsw-alias-label-secondary,#9aa0ad);border:1px solid var(--dsw-alias-border-l2,#303239);border-radius:var(--dsw-radius-xs,4px);padding:0 4px}
+.dshc-fold{display:flex;align-items:center;gap:8px;width:100%;padding:3px 10px;border:0;border-top:1px solid var(--dsw-alias-border-l2,#303239);border-bottom:1px solid var(--dsw-alias-border-l2,#303239);background:var(--dsw-alias-fill-l2,rgba(127,127,127,.08));color:var(--dsw-alias-label-tertiary,#6f7683);font:inherit;font-size:10.5px;cursor:pointer;text-align:left}
+.dshc-fold:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.16));color:var(--dsw-alias-label-secondary,#9aa0ad)}
+.dshc-fold__sign{font-family:var(--dsw-font-mono,ui-monospace,Menlo,Consolas,monospace)}
 .dshc-round{display:flex;align-items:center;gap:6px;padding:3px 10px;background:var(--dsw-alias-fill-l1,rgba(127,127,127,.14));border-top:1px solid var(--dsw-alias-border-l2,#303239);border-bottom:1px solid var(--dsw-alias-border-l2,#303239);font-size:10.5px;color:var(--dsw-alias-label-secondary,#9aa0ad);position:sticky;top:0;z-index:1}
 .dshc-round:first-child{border-top:0}
 .dshc-round[data-handled="true"]{opacity:.5}
@@ -554,9 +559,6 @@ window.__ModuleLoader__.load({
 
       const totals = data?.totals ?? { added: 0, deleted: 0 }
       const rows = (data?.files ?? []).filter((file) => !file.handled)
-      // How many rounds those pending files came from — context, not a gate.
-      const rounds = data?.ok === true ? (data.batches ?? []).length : 0
-      const behind = rounds > 1 ? rounds - 1 : 0
 
       if (pending === 0) {
         return h(
@@ -611,10 +613,7 @@ window.__ModuleLoader__.load({
             },
             h('span', { className: 'dshc-bar__count', role: 'status', 'aria-live': 'polite' },
               t('bar.pending', { count: pending })),
-            behind > 0
-              ? h('span', { className: 'dshc-badge', title: t('bar.queueHint', { count: rounds }) },
-                t('panel.rounds', { count: rounds }))
-              : null,
+            
             h('span', { className: 'dshc-chev', 'aria-hidden': true }, open ? '▴' : '▾'),
           ),
           h(
@@ -809,7 +808,8 @@ window.__ModuleLoader__.load({
       const vcs = data?.vcs ?? { kind: null, reason: '' }
       const vcsKind = vcs.kind === 'git' || vcs.kind === 'svn' ? vcs.kind : null
 
-      // The whole file, every batch that touched it, drawn as labelled blocks.
+      // One continuous diff of the whole file, annotated per hunk by the round
+      // that first introduced it.
       const diffLive = useLive(
         baseline === 'snapshot' && selected.path !== '',
         sessionId,
@@ -822,36 +822,28 @@ window.__ModuleLoader__.load({
       const refsLive = useLive(baseline !== 'snapshot' && vcsKind !== null, sessionId, 'refs', { kind: vcsKind ?? '' }, 60000, nonce)
       const refFilesLive = useLive(baseline !== 'snapshot' && ref !== '', sessionId, 'ref-files', { kind: vcsKind ?? '', ref }, 60000, nonce)
 
-      // Flattened review order: parts oldest first, hunks in file order.
-      const blocks = diff?.ok === true ? (diff.parts ?? []).filter((part) => part.ok === true) : []
-      const flat = useMemo(() => {
-        const list = []
-        blocks.forEach((part, partIndex) => {
-          if (part.kind !== 'text') {
-            list.push({ partIndex, seq: part.seq, kind: part.kind, hunkIdx: undefined })
-            return
-          }
-          for (const hunk of part.hunks ?? []) {
-            list.push({ partIndex, seq: part.seq, kind: 'text', hunkIdx: hunk.idx })
-          }
-        })
-        return list
-      }, [diff])
-
-      const current = useMemo(() => {
-        for (const entry of flat) {
-          if (entry.kind !== 'text') {
-            if (blocks[entry.partIndex]?.handled !== true) return entry
-            continue
-          }
-          const states = blocks[entry.partIndex]?.states ?? {}
-          if (states[entry.hunkIdx] === undefined) return entry
-        }
-        return undefined
-      }, [flat, diff])
-
+      const hunks = useMemo(
+        () => (diff?.ok === true && diff.kind === 'text' ? diff.hunks ?? [] : []),
+        [diff],
+      )
+      const current = diff?.ok === true ? diff.cursor : undefined
       const progress = diff?.ok === true ? diff.progress ?? { decided: 0, total: 0 } : { decided: 0, total: 0 }
-      const labelled = blocks.length > 1
+
+      // Fold state per hunk gap: keyed by the gap's index so expanding one does
+      // not disturb the others. Collapsed by default, like an SVN diff.
+      const [expanded, setExpanded] = useState({})
+      const fileText = useLive(
+        baseline === 'snapshot' && selected.path !== '' && Object.keys(expanded).some((key) => expanded[key] === true),
+        sessionId,
+        'file',
+        { path: selected.path },
+        60000,
+        nonce,
+      )
+      const fileLines = useMemo(() => {
+        const text = fileText.data?.ok === true ? fileText.data.text : undefined
+        return text === undefined ? [] : text.split('\n')
+      }, [fileText.data])
 
       const flash = useCallback((text, bad) => {
         setNotice({ text, bad })
@@ -907,16 +899,12 @@ window.__ModuleLoader__.load({
       // The badge counts pending files; the batch count tells how many review
       // rounds those files came from.
       const pendingCount = files.filter((file) => !file.handled).length
-      const batchCount = data?.ok === true ? (data.batches ?? []).length : 0
       const head = h(
         'div',
         { className: 'dshc-panel__head' },
         h('span', { className: 'dshc-panel__title' }, t('tab.title')),
         h('span', { className: 'dshc-badge' }, String(pendingCount)),
-        batchCount > 1
-          ? h('span', { className: 'dshc-muted', title: t('panel.roundsHint', { count: batchCount }) },
-            t('panel.rounds', { count: batchCount }))
-          : null,
+        
         data.restored === true ? h('span', { className: 'dshc-muted' }, t('panel.restoredBadge')) : null,
         h('span', { className: 'dshc-spacer' }),
         h(
@@ -1091,10 +1079,7 @@ window.__ModuleLoader__.load({
             onClick: () => setSelected({ path: file.path, seq: undefined }),
           },
           h('span', { className: 'dshc-file__path' }, file.display),
-          (file.parts?.length ?? 0) > 1
-            ? h('span', { className: 'dshc-rounds', title: t('panel.roundsHint', { count: file.parts.length }) },
-              t('panel.rounds', { count: file.parts.length }))
-            : null,
+          
           h(
             'span',
             { className: 'dshc-file__stat' },
@@ -1127,96 +1112,102 @@ window.__ModuleLoader__.load({
           h('span', { className: 'dshc-diff__path' }, diff.path ?? shorten(selected.path)),
         )
         diffBody = h('div', { className: 'dshc-placeholder' }, diff.error ?? t('panel.diffUnavailable'))
-      } else if (blocks.length === 0) {
+      } else if (diff.kind === 'binary' || diff.kind === 'oversized' || diff.coarse === true || hunks.length === 0) {
+        // Nothing hunk-level to review: only file-level actions apply.
         diffHead = h(
           'div',
           { className: 'dshc-diff__head' },
           h('span', { className: 'dshc-diff__path' }, diff.display ?? shorten(selected.path)),
+          h('span', { className: 'dshc-progress' }, diff.kind === 'text' && hunks.length === 0 ? t('panel.noHunks') : ''),
           h('span', { className: 'dshc-spacer' }),
           acceptFileButton(diff.path),
         )
-        diffBody = h('div', { className: 'dshc-placeholder' }, t('panel.diffUnavailable'))
+        diffBody = h(
+          'div',
+          { className: 'dshc-placeholder' },
+          diff.kind === 'binary'
+            ? t('panel.binary')
+            : diff.kind === 'oversized'
+              ? t('panel.oversized')
+              : diff.coarse === true ? t('panel.coarse') : t('panel.noHunks'),
+        )
       } else {
-        const only = blocks[0]
-        const binaryBlock = only.kind === 'binary' || only.kind === 'oversized'
-        const coarseBlock = only.kind === 'text' && only.coarse === true
-        const noHunks = progress.total === 0
+        diffHead = h(
+          'div',
+          { className: 'dshc-diff__head' },
+          h('span', { className: 'dshc-diff__path' }, diff.display ?? shorten(selected.path)),
+          h('span', { className: 'dshc-progress' }, current === undefined
+            ? t('panel.allHandled')
+            : t('panel.hunkProgress', { index: progress.decided + 1, total: progress.total })),
+          current === undefined
+            ? null
+            : h('button', {
+              type: 'button',
+              className: 'dshc-btn',
+              disabled: busy !== '',
+              onClick: () => run({ op: 'acceptHunk', path: diff.path, hunkIdx: current.hunkIdx }),
+            }, t('panel.accept')),
+          current === undefined
+            ? null
+            : h('button', {
+              type: 'button',
+              className: 'dshc-btn dshc-btn--danger',
+              disabled: busy !== '',
+              onClick: () => run({ op: 'rejectHunk', path: diff.path, hunkIdx: current.hunkIdx }),
+            }, t('panel.reject')),
+        )
 
-        if (binaryBlock || coarseBlock || noHunks) {
-          // Nothing hunk-level to review: only file-level actions apply.
-          diffHead = h(
-            'div',
-            { className: 'dshc-diff__head' },
-            h('span', { className: 'dshc-diff__path' }, diff.display ?? shorten(selected.path)),
-            h('span', { className: 'dshc-progress' }, noHunks && !binaryBlock && !coarseBlock ? t('panel.noHunks') : ''),
-            h('span', { className: 'dshc-spacer' }),
-            acceptFileButton(diff.path),
-          )
-          diffBody = h(
-            'div',
-            { className: 'dshc-placeholder' },
-            binaryBlock
-              ? (only.kind === 'binary' ? t('panel.binary') : t('panel.oversized'))
-              : coarseBlock ? t('panel.coarse') : t('panel.noHunks'),
-          )
-        } else {
-          diffHead = h(
-            'div',
-            { className: 'dshc-diff__head' },
-            h('span', { className: 'dshc-diff__path' }, diff.display ?? shorten(selected.path)),
-            h('span', { className: 'dshc-progress' }, current === undefined
-              ? t('panel.allHandled')
-              : t('panel.hunkProgress', { index: progress.decided + 1, total: progress.total })),
-            current === undefined
-              ? null
-              : h('button', {
-                type: 'button',
-                className: 'dshc-btn',
-                disabled: busy !== '',
-                onClick: () => run({ op: 'acceptHunk', path: diff.path, seq: current.seq, hunkIdx: current.hunkIdx }),
-              }, t('panel.accept')),
-            current === undefined
-              ? null
-              : h('button', {
-                type: 'button',
-                className: 'dshc-btn dshc-btn--danger',
-                disabled: busy !== '',
-                onClick: () => run({ op: 'rejectHunk', path: diff.path, seq: current.seq, hunkIdx: current.hunkIdx }),
-              }, t('panel.reject')),
-          )
-
-          // Blocks are drawn in the order the rounds happened. When a file was
-          // touched more than once, each block starts with a numbered marker so
-          // the reader knows which round produced it — the marker is a header
-          // row, never part of a code line, and never written to disk.
-          diffBody = h(
-            'div',
-            { className: 'dshc-diff__body' },
-            blocks.flatMap((part, partIndex) => {
-              const marker = labelled
-                ? [h('div', {
-                  key: `marker-${part.seq}`,
-                  className: 'dshc-round',
-                  'data-handled': part.handled === true,
-                },
-                h('span', { className: 'dshc-round__no' }, roundLabel(partIndex)),
-                h('span', { className: 'dshc-round__text' }, t('panel.round', { turn: part.turn ?? 0 })),
-                )]
-                : []
-              if (part.kind !== 'text') {
-                return [...marker, h('div', { key: `note-${part.seq}`, className: 'dshc-placeholder' },
-                  part.kind === 'binary' ? t('panel.binary') : t('panel.oversized'))]
+        // One continuous list in file order. Between hunks the untouched region
+        // is folded into a single expandable row, the way an SVN diff collapses
+        // unchanged text; the row states how many lines it hides.
+        const rows = []
+        let previousEnd = 1
+        hunks.forEach((hunk, index) => {
+          const gap = hunk.newStart - previousEnd
+          if (index > 0 && gap > 0) {
+            const key = `gap-${index}`
+            const open = expanded[key] === true
+            rows.push(h('button', {
+              key,
+              type: 'button',
+              className: 'dshc-fold',
+              onClick: () => setExpanded((value) => ({ ...value, [key]: !open })),
+              title: open ? t('diff.fold') : t('diff.expand'),
+            },
+            h('span', { className: 'dshc-fold__sign' }, open ? '⌃' : '⋯'),
+            h('span', null, open ? t('diff.foldHint') : t('diff.folded', { count: gap })),
+            ))
+            if (open) {
+              const from = previousEnd
+              const to = hunk.newStart - 1
+              for (let line = from; line <= to; line += 1) {
+                rows.push(h('div', { key: `gap-${index}-${line}`, className: 'dshc-line', 'data-kind': 'ctx' },
+                  h('span', { className: 'dshc-line__no' }, ''),
+                  h('span', { className: 'dshc-line__no' }, String(line)),
+                  h('span', { className: 'dshc-line__txt' }, ` ${fileLines[line - 1] ?? ''}`),
+                ))
               }
-              const rows = (part.hunks ?? []).map((hunk) => h(HunkView, {
-                key: `${part.seq}:${hunk.idx}`,
-                hunk,
-                state: part.states?.[hunk.idx],
-                active: current !== undefined && current.seq === part.seq && current.hunkIdx === hunk.idx,
-              }))
-              return [...marker, ...rows]
-            }),
-          )
-        }
+            }
+          }
+          // The annotation that names the round this hunk first appeared in. A
+          // rendering-only row: it never becomes part of a code line, and never
+          // reaches the file the plugin writes back.
+          const rounds = diff.rounds ?? 1
+          if (rounds > 1) {
+            rows.push(h('div', { key: `note-${hunk.idx}`, className: 'dshc-round' },
+              h('span', { className: 'dshc-round__no' }, roundLabel((hunk.round ?? rounds) - 1)),
+              h('span', { className: 'dshc-round__text' }, t('panel.round', { turn: hunk.round ?? rounds })),
+            ))
+          }
+          rows.push(h(HunkView, {
+            key: `hunk-${hunk.idx}`,
+            hunk,
+            state: diff.states?.[hunk.idx],
+            active: current !== undefined && current.hunkIdx === hunk.idx,
+          }))
+          previousEnd = hunk.newStart + hunk.newLines
+        })
+        diffBody = h('div', { className: 'dshc-diff__body' }, rows)
       }
 
       return h(

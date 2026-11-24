@@ -24,33 +24,48 @@ for (const file of ['package.json', 'locale/zh.json', 'locale/en.json']) {
   }
 }
 
+const host = fs.readFileSync('index.js', 'utf8')
+const client = fs.readFileSync('client.js', 'utf8')
 const manifest = JSON.parse(fs.readFileSync('package.json', 'utf8'))
 console.log(`  version: ${manifest.version}`)
 console.log(`  name: ${manifest.name}`)
 
-const host = fs.readFileSync('index.js', 'utf8')
 const checks = {
+  // persistence
   'persistence store path': host.includes("'dsh-changes', 'state.json'"),
   'loadStore': host.includes('const loadStore = ()'),
   'captureTurn': host.includes('const captureTurn = async'),
-  'restore path in diffOf': host.includes("sessionRecord(sessionId)?.diffs?.[String(batch.seq)]?.[path]"),
   'restoreDecisions': host.includes('restoreDecisions()'),
   'flush on dispose': host.includes("'dsh-changes: persisted state'"),
-  'batches are never collapsed': !host.includes('knownTurn === turn && knownSeq !== seq'),
-  'files merged across batches': host.includes('const byPath = new Map()') && host.includes('parts: merged.parts'),
-  'bulk action covers every pending file': host.includes('forEveryPendingFile'),
-  'decisions keyed by batch': host.includes('`${sessionId}\\u0000${seq}\\u0000${path}`'),
-  'file revert walks newest first': host.includes('.reverse()') && host.includes('revertWholeFile(sessionId, batch, file'),
-  'diff returns labelled parts': host.includes('parts.push(') && host.includes('cursor,'),
+  // merging + single continuous diff
+  'files merged by path': host.includes('const byPath = new Map()'),
+  'review unit is the newest recording': host.includes('handled: latest?.handled === true'),
+  'diff is one continuous list': host.includes('const hunks = diff.hunks.map') && host.includes('round: firstSeen.get'),
+  'annotations never reach a write': !host.includes('dshc-round'),
+  // folding
+  'file text endpoint exists': host.includes('const buildFileText = async'),
+  'file text is bounded': host.includes('MAX_FILE_TEXT_BYTES'),
+  // vcs
+  'vcs says why it is unavailable': host.includes("code: 'no-vcs'") && host.includes('detected.reason'),
+  'git refs command': host.includes("'git', 'log', '-20'"),
 }
-for (const [label, present] of Object.entries(checks)) console.log(`  ${present ? 'ok  ' : 'MISS'} ${label}`)
 
-const client = fs.readFileSync('client.js', 'utf8')
-const clientChecks = {
-  'bar uses merged counts': client.includes('data?.totals') && client.includes("(data?.files ?? [])"),
-  'panel lists one row per file': client.includes("className: 'dshc-file'") && client.includes('file.parts?.length'),
-  'panel labels rounds': client.includes("className: 'dshc-round'"),
-  'markers are rendering only': !host.includes('dshc-round'),
+for (const [label, present] of Object.entries(checks)) {
+  console.log(`  ${present ? 'ok  ' : 'MISS'} ${label}`)
+  if (!present) problems += 1
 }
-for (const [label, present] of Object.entries(clientChecks)) console.log(`  ${present ? 'ok  ' : 'MISS'} ${label}`)
+
+const clientChecks = {
+  'bar uses merged file counts': client.includes('data?.totals') && client.includes("(data?.files ?? [])"),
+  'no round badge in the bar': !client.includes("'bar.queueBadge'"),
+  'no round chip in the file list': !client.includes("className: 'dshc-rounds'"),
+  'one continuous diff body': client.includes("className: 'dshc-diff__body' }, rows"),
+  'per-hunk round annotation': client.includes("className: 'dshc-round'"),
+  'fold bar for unchanged lines': client.includes("className: 'dshc-fold'"),
+}
+for (const [label, present] of Object.entries(clientChecks)) {
+  console.log(`  ${present ? 'ok  ' : 'MISS'} ${label}`)
+  if (!present) problems += 1
+}
+
 process.exit(problems === 0 ? 0 : 1)

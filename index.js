@@ -53,6 +53,8 @@ const JSON_HEADERS = { 'content-type': 'application/json; charset=utf-8' }
 const MAX_BODY_BYTES = 1 << 20
 const MAX_STDOUT_BYTES = 1 << 20
 const MAX_STDERR_BYTES = 1 << 16
+/** Bytes of a changed file the panel may pull to expand unchanged regions. */
+const MAX_FILE_TEXT_BYTES = 2 * 1024 * 1024
 
 /** Reply helper for `webServer` resource routes. */
 function json(value, status = 200) {
@@ -600,9 +602,12 @@ export function apply(ctx, config) {
     // first, so the earliest unreviewed change is the one in front.
     const queue = batches.filter((batch) => batch.pending > 0)
 
-    // Merged view: one entry per path across every batch that touched it. The
-    // bar reviews files, not batches — a file stays pending while ANY of its
-    // batches is unconfirmed — and the panel labels each batch's block.
+    // Merged view: one review unit per path.
+    //
+    // A file is reviewed once, against the newest recording that touched it:
+    // each recording compares the same turn baseline to the state at that
+    // moment, so the newest one already contains every earlier change. Older
+    // recordings are kept only to say which round first introduced a hunk.
     const byPath = new Map()
     for (const batch of batches) {
       for (const file of batch.files) {
@@ -637,14 +642,15 @@ export function apply(ctx, config) {
         display: merged.display,
         binary: merged.binary,
         oversized: merged.oversized,
-        // Counts describe the newest batch, the closest reading of what the file
-        // holds now; summing parts would count the same lines twice.
+        // Counts describe the newest recording, the closest reading of what the
+        // file holds now; summing parts would count the same lines twice.
         added: latest?.added ?? 0,
         deleted: latest?.deleted ?? 0,
         seq: latest?.seq,
         turn: latest?.turn,
         parts: merged.parts,
-        handled: merged.parts.every((part) => part.handled),
+        // One review unit: the file is handled once its newest change set is.
+        handled: latest?.handled === true,
       }
     }).sort((left, right) => (left.display < right.display ? -1 : left.display > right.display ? 1 : 0))
 
@@ -955,9 +961,19 @@ export function apply(ctx, config) {
     const collected = await collect(sessionId)
     if (!collected.ok) return { ok: false, code: collected.code, error: collected.error }
     const detected = await detectVcs(sessionId, collected.cwd, signal)
+    // An explicitly requested kind still needs a repository: without one, say so
+    // in the user's terms instead of surfacing a raw `fatal: not a git
+    // repository`, which reads as a plugin failure rather than a fact.
+    if (detected.kind === null) {
+      return { ok: false, code: 'no-vcs', error: detected.reason ?? '当前工作目录不是版本控制仓库' }
+    }
     const chosen = kind ?? detected.kind
-    if (chosen === null || chosen === undefined) {
-      return { ok: false, code: 'no-vcs', error: detected.reason ?? '未检测到版本控制' }
+    if (chosen !== detected.kind) {
+      return {
+        ok: false,
+        code: 'no-vcs',
+        error: `当前工作目录是 ${detected.kind.toUpperCase()} 仓库，不能用作 ${String(chosen).toUpperCase()} 基线`,
+      }
     }
     if (chosen === 'git') {
       const run = await runCommand(
@@ -1064,90 +1080,113 @@ export function apply(ctx, config) {
   }
 
   /**
-   * One file's comparison, as every batch that touched it.
+   * One file's comparison as a single continuous diff, plus an annotation per
+   * hunk naming the round that first introduced it.
    *
-   * The batches are not rebased into a single diff: each recording compares its
-   * own baseline, so their line numbers live in different coordinate systems and
-   * merging them would invent positions. Each part therefore keeps the recorder's
-   * own numbers and is labelled by the panel instead.
+   * Each recording compares the turn baseline to the state at that moment, so
+   * the newest one already contains every earlier change and its line numbers are
+   * the true final ones. Earlier recordings are consulted only to decide which
+   * round a hunk came from — never to build positions.
    */
-  const buildDiff = async (sessionId, seq, path, signal) => {
+  const buildDiff = async (sessionId, path, signal) => {
     const collected = await collect(sessionId)
     if (!collected.ok) return { ok: false, code: collected.code, error: collected.error }
     const merged = collected.files.find((candidate) => candidate.path === path)
     if (merged === undefined) return { ok: false, code: 'no-file', error: '该文件已不在改动列表中' }
 
-    const wanted = seq === undefined
-      ? merged.parts.map((part) => part.seq)
-      : [seq]
+    const latestSeq = merged.parts[merged.parts.length - 1]?.seq
+    const found = await diffOf(sessionId, latestSeq, path, signal)
+    if (!found.ok) return { ok: false, code: found.code, error: found.error }
+    const { batch, file, diff } = found
+    const record = decisionOf(sessionId, batch.seq, file.path)
+    const states = record?.hunks ?? {}
 
-    const parts = []
-    for (const partSeq of wanted) {
-      const found = await diffOf(sessionId, partSeq, path, signal)
-      if (!found.ok) {
-        parts.push({ seq: partSeq, ok: false, code: found.code, error: found.error })
-        continue
-      }
-      const { batch, file, diff } = found
-      const record = decisionOf(sessionId, batch.seq, file.path)
-      const base = {
-        seq: batch.seq,
-        turn: batch.turn,
-        restored: found.restored === true,
-        kind: diff.kind,
-        handled: record !== undefined && record.done === true,
-        states: record?.hunks ?? {},
-        ok: true,
-      }
-      if (diff.kind !== 'text') {
-        parts.push({ ...base, before: diff.before, after: diff.after, hunks: [] })
-        continue
-      }
-      parts.push({
-        ...base,
-        before: diff.before,
-        after: diff.after,
-        coarse: diff.coarse === true,
-        hunks: diff.hunks.map((hunk, index) => ({
-          idx: index,
-          oldStart: hunk.oldStart,
-          oldLines: hunk.oldLines,
-          newStart: hunk.newStart,
-          newLines: hunk.newLines,
-          lines: hunk.lines,
-        })),
-      })
-    }
-
-    // The hunk the header acts on: the first undecided one, walking the batches
-    // oldest first so review follows the order the changes happened.
-    let cursor
-    for (const part of parts) {
-      if (part.ok !== true || part.kind !== 'text') {
-        if (part.handled !== true) {
-          cursor = { seq: part.seq, hunkIdx: undefined, kind: part.kind }
-          break
-        }
-        continue
-      }
-      const index = part.hunks.findIndex((hunk) => part.states[hunk.idx] === undefined)
-      if (index >= 0) {
-        cursor = { seq: part.seq, hunkIdx: part.hunks[index].idx, kind: 'text' }
-        break
-      }
-    }
-
-    const totalHunks = parts.reduce((sum, part) => sum + (part.kind === 'text' ? part.hunks.length : 0), 0)
-    const decidedHunks = parts.reduce((sum, part) => sum + (part.kind === 'text' ? Object.keys(part.states ?? {}).length : 0), 0)
-    return {
+    const base = {
       ok: true,
       path: merged.path,
       display: merged.display,
+      seq: batch.seq,
+      turn: batch.turn,
+      rounds: merged.parts.length,
       handled: merged.handled === true,
-      restored: merged.parts.some((part) => part.restored === true),
-      parts,
-      cursor,
-      progress: { decided: decidedHunks, total: totalHunks },
+      restored: found.restored === true,
+      states,
+      kind: diff.kind,
+    }
+    if (diff.kind !== 'text') {
+      return { ...base, hunks: [], cursor: undefined, progress: { decided: 0, total: 0 } }
+    }
+
+    // Signature of a hunk's actual edit: its added and removed lines. Positions
+    // shift between recordings as the file grows, content does not.
+    const signature = (hunk) => {
+      const added = []
+      const removed = []
+      for (const line of hunk.lines ?? []) {
+        if (line[0] === '+') added.push(line.slice(1))
+        else if (line[0] === '-') removed.push(line.slice(1))
+      }
+      return `${added.join('\n')}\u0001${removed.join('\n')}`
+    }
+
+    // Which round first introduced each signature, oldest recording winning.
+    const firstSeen = new Map()
+    if (merged.parts.length > 1) {
+      for (let index = 0; index < merged.parts.length - 1; index += 1) {
+        const part = merged.parts[index]
+        const earlier = await diffOf(sessionId, part.seq, path, signal)
+        if (!earlier.ok || earlier.diff.kind !== 'text') continue
+        for (const hunk of earlier.diff.hunks) {
+          const key = signature(hunk)
+          if (!firstSeen.has(key)) firstSeen.set(key, index + 1)
+        }
+      }
+    }
+
+    const hunks = diff.hunks.map((hunk, index) => ({
+      idx: index,
+      oldStart: hunk.oldStart,
+      oldLines: hunk.oldLines,
+      newStart: hunk.newStart,
+      newLines: hunk.newLines,
+      lines: hunk.lines,
+      // 1-based round this hunk first appeared in; the newest round by default.
+      round: firstSeen.get(signature(hunk)) ?? merged.parts.length,
+    }))
+
+    const cursor = hunks.find((hunk) => states[hunk.idx] === undefined)
+    return {
+      ...base,
+      coarse: diff.coarse === true,
+      before: diff.before,
+      after: diff.after,
+      hunks,
+      cursor: cursor === undefined ? undefined : { seq: batch.seq, hunkIdx: cursor.idx },
+      progress: { decided: Object.keys(states).length, total: hunks.length },
+    }
+  }
+
+  /**
+   * The current text of one changed file, for the panel's unchanged-region
+   * folding. Bounded so a huge file cannot stall the page.
+   */
+  const buildFileText = async (sessionId, path, signal) => {
+    const collected = await collect(sessionId)
+    if (!collected.ok) return { ok: false, code: collected.code, error: collected.error }
+    const merged = collected.files.find((candidate) => candidate.path === path)
+    if (merged === undefined) return { ok: false, code: 'no-file', error: '该文件已不在改动列表中' }
+    if (merged.binary === true || merged.oversized === true) {
+      return { ok: false, code: 'unsupported', error: merged.binary === true ? '二进制文件没有文本内容' : '文件过大，不展开' }
+    }
+    if (collected.cwd === undefined) return { ok: false, code: 'no-cwd', error: '会话没有工作目录' }
+    try {
+      const text = await readTextAt(absoluteOf(collected.cwd, { path: merged.path }), signal)
+      if (text.length > MAX_FILE_TEXT_BYTES) {
+        return { ok: false, code: 'too-large', error: '文件过大，不展开未改动部分' }
+      }
+      return { ok: true, path: merged.path, text, lines: text.split('\n').length }
+    } catch (error) {
+      return { ok: false, code: 'read-failed', error: `读取失败：${messageOf(error)}` }
     }
   }
 
@@ -1223,23 +1262,21 @@ export function apply(ctx, config) {
   }
 
   /**
-   * Keep a whole file: every batch that touched it is confirmed at once, which
-   * is what the merged file row means.
+   * Keep a whole file: the newest recording already contains every earlier
+   * change, so confirming it settles the file's review unit.
    */
   const acceptFile = async (sessionId, seq, path, signal) => {
     const collected = await collect(sessionId)
     if (!collected.ok) return { ok: false, code: collected.code, error: collected.error }
     const merged = collected.files.find((candidate) => candidate.path === path)
     if (merged === undefined) return { ok: false, code: 'no-file', error: '该文件已不在改动列表中' }
-    let marked = 0
-    for (const part of merged.parts) {
-      const record = freshDecision(sessionId, part.seq, merged.path)
-      record.done = true
-      record.file = 'accept'
-      persistDecision(sessionId, record)
-      marked += 1
-    }
-    return { ok: true, parts: marked }
+    const latestSeq = Number.isInteger(seq) ? seq : merged.parts[merged.parts.length - 1]?.seq
+    if (!Number.isInteger(latestSeq)) return { ok: false, code: 'no-file', error: '该文件已不在改动列表中' }
+    const record = freshDecision(sessionId, latestSeq, merged.path)
+    record.done = true
+    record.file = 'accept'
+    persistDecision(sessionId, record)
+    return { ok: true }
   }
 
   /**
@@ -1256,7 +1293,10 @@ export function apply(ctx, config) {
     if (merged === undefined) return { ok: false, code: 'no-file', error: '该文件已不在改动列表中' }
     if (collected.cwd === undefined) return { ok: false, code: 'no-cwd', error: '会话没有工作目录' }
 
-    const parts = [...merged.parts].filter((part) => !part.handled).reverse()
+    // Undo every round that touched the file, newest first: that is the only
+    // order whose line numbers match the content being unwound. Rounds already
+    // confirmed are included — "撤销这个文件" means back to before all of them.
+    const parts = [...merged.parts].reverse()
     let reverted = 0
     for (const part of parts) {
       const batch = collected.batches.find((candidate) => candidate.seq === part.seq)
@@ -1327,11 +1367,13 @@ export function apply(ctx, config) {
           return json(await buildState(sessionId, signal))
         case `${NS}/diff`: {
           const path = url.searchParams.get('path') ?? ''
-          const rawSeq = url.searchParams.get('seq')
-          const seq = rawSeq === null || rawSeq === '' ? undefined : Number(rawSeq)
           if (path === '') return json({ ok: false, error: '缺少 path' }, 400)
-          if (seq !== undefined && !Number.isInteger(seq)) return json({ ok: false, error: 'seq 必须是整数' }, 400)
-          return json(await buildDiff(sessionId, seq, path, signal))
+          return json(await buildDiff(sessionId, path, signal))
+        }
+        case `${NS}/file`: {
+          const path = url.searchParams.get('path') ?? ''
+          if (path === '') return json({ ok: false, error: '缺少 path' }, 400)
+          return json(await buildFileText(sessionId, path, signal))
         }
         case `${NS}/refs`: {
           const kind = url.searchParams.get('kind') ?? undefined

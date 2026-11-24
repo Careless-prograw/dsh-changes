@@ -1077,11 +1077,31 @@ export function apply(ctx, config) {
     return hunks
   }
 
+  /** Just the repository identity, for the "compared with …" line. */
+  const vcsRepoInfo = async (sessionId, kind, signal) => {
+    const collected = await collect(sessionId)
+    if (!collected.ok) return { ok: false, code: collected.code, error: collected.error }
+    if (collected.cwd === undefined) return { ok: false, code: 'no-cwd', error: '会话没有工作目录' }
+    const detected = await detectVcs(sessionId, collected.cwd, signal)
+    if (detected.kind === null) {
+      return { ok: false, code: 'no-vcs', error: detected.reason ?? '当前工作目录不是版本控制仓库' }
+    }
+    const chosen = kind ?? detected.kind
+    if (chosen !== detected.kind) {
+      return { ok: false, code: 'no-vcs', error: `当前工作目录是 ${detected.kind.toUpperCase()} 仓库` }
+    }
+    const info = chosen === 'svn'
+      ? await svnWorkingCopyInfo(collected.cwd, signal)
+      : await gitRepoInfo(collected.cwd, signal)
+    return { ok: true, kind: chosen, info }
+  }
+
   /**
    * Files that differ between the working copy and the repository's base state.
    *
-   * This is what a "Git / SVN baseline" means: the same file list the review bar
-   * shows, but measured against the repository instead of the turn snapshot.
+   * This is the repository's whole view, which is wider than one session's work:
+   * the panel deliberately lists the session's files instead, and uses this only
+   * to describe the repository.
    */
   const vcsChangedFiles = async (sessionId, kind, signal) => {
     const collected = await collect(sessionId)
@@ -1234,8 +1254,31 @@ export function apply(ctx, config) {
     const run = await runCommand(collected.cwd, ['svn', 'diff', '--non-interactive', path], signal)
     if (!run.ok) return { ok: false, code: 'svn-failed', error: run.error }
     const text = run.stdout
-    const stderrLine = run.stderr.split('\n').map((item) => item.trim()).find((item) => item.startsWith('svn:')) ?? ''
+    const stderrLine = run.stderr.split(/\r?\n/).map((item) => item.trim()).find((item) => item.startsWith('svn:')) ?? ''
     if (stderrLine !== '' && /svn: (warning|E\d+)/i.test(stderrLine)) {
+      // A working copy can legitimately not track this path (a file the session
+      // created, or one excluded by ignore rules). That is a state, not a fault.
+      const one = await runCommand(collected.cwd, ['svn', 'status', '--non-interactive', '--', path], signal)
+      const listed = one.ok ? one.stdout.trim().split(/\r?\n/)[0] ?? '' : ''
+      if (listed.startsWith('?') || listed === '') {
+        try {
+          const current = await readTextAt(absoluteOf(collected.cwd, { path }), signal)
+          const split = splitLines(current)
+          const lines = split.lines.map((line) => `+${line}`)
+          return {
+            ok: true,
+            kind,
+            base: 'BASE',
+            path,
+            display,
+            diffKind: 'text',
+            untracked: true,
+            hunks: lines.length === 0 ? [] : [{ oldStart: 0, oldLines: 0, newStart: 1, newLines: lines.length, lines }],
+          }
+        } catch {
+          return { ok: false, code: 'svn-untracked', error: '该文件不在版本控制中' }
+        }
+      }
       return { ok: false, code: 'svn-failed', error: stderrLine.replace(/^svn:\s*(warning:\s*)?/, '') }
     }
     if (text.includes('Cannot display:') || text.includes('(binary)')) {
@@ -1643,6 +1686,10 @@ export function apply(ctx, config) {
         case `${NS}/refs`: {
           const kind = url.searchParams.get('kind') ?? undefined
           return json(await listRefs(sessionId, kind, signal))
+        }
+        case `${NS}/vcs-info`: {
+          const kind = url.searchParams.get('kind') ?? undefined
+          return json(await vcsRepoInfo(sessionId, kind, signal))
         }
         case `${NS}/vcs-state`: {
           const kind = url.searchParams.get('kind') ?? undefined

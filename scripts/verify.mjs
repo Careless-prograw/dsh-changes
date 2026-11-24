@@ -83,7 +83,7 @@ const clientChecks = {
   'code text is hue-matched, lightness-shifted': client.includes('color-mix(in srgb, var(--dshc-marker) 58%'),
   'code text never uses a flat diff token': !client.includes('code-diff-added') && !client.includes('code-diff-deleted'),
   'gutter and sign carry the colour': client.includes('--dshc-marker') && client.includes('dshc-line__sign'),
-  'baseline swaps the source, not the layout': client.includes('vcs-state') && client.includes('vcs-diff') && !client.includes('const refList = h('),
+  'baseline swaps the source, not the layout': client.includes('vcs-diff') && client.includes('vcs-info') && client.includes('const files = snapshotFiles') && !client.includes('const refList = h('),
   'vcs baseline is read-only': client.includes('panel.vcsReadOnly'),
   'diff branch guards the loading state': client.includes('if (shown === undefined)'),
   'vcs mode names the comparison base': client.includes('panel.vcsBaseSvn') && client.includes('panel.vcsBaseGit'),

@@ -852,16 +852,16 @@ window.__ModuleLoader__.load({
       const vcsKind = vcs.kind === 'git' || vcs.kind === 'svn' ? vcs.kind : null
       const vcsMode = baseline !== 'snapshot' && vcsKind !== null
 
-      // The left column lists the same kind of thing in both modes — files — but
-      // measured against a different base: the turn snapshot, or the repository.
-      const vcsStateLive = useLive(vcsMode, sessionId, 'vcs-state', { kind: vcsKind ?? '' }, 15000, nonce)
+      // The list is always this session's own work. A Git / SVN baseline only
+      // changes what those files are compared against: the repository holds other
+      // sessions' edits too, so listing it would review somebody else's changes.
       const snapshotFiles = data?.ok === true ? data.files ?? [] : []
-      const files = vcsMode
-        ? (vcsStateLive.data?.ok === true ? vcsStateLive.data.files ?? [] : [])
-        : snapshotFiles
+      const files = snapshotFiles
+      const vcsInfoLive = useLive(vcsMode, sessionId, 'vcs-info', { kind: vcsKind ?? '' }, 60000, nonce)
 
       useEffect(() => {
-        // A different base means a different set of files: drop a stale selection.
+        // A different base means the same files but a different diff; keep the
+        // selection when it is still in the list.
         if (selected.path !== '' && files.some((file) => file.path === selected.path)) return
         const first = files.find((file) => !file.handled) ?? files[0]
         setSelected({ path: first?.path ?? '', seq: undefined })
@@ -1095,9 +1095,9 @@ window.__ModuleLoader__.load({
       // can check: which working copy, which revision, which comparison.
       const baseLine = (() => {
         if (!vcsMode) return undefined
-        const info = vcsStateLive.data?.info
-        const loading = vcsStateLive.loading && vcsStateLive.data === undefined
-        const error = vcsStateLive.data?.ok === false ? vcsStateLive.data.error : undefined
+        const info = vcsInfoLive.data?.info
+        const loading = vcsInfoLive.loading && vcsInfoLive.data === undefined
+        const error = vcsInfoLive.data?.ok === false ? vcsInfoLive.data.error : undefined
         if (error !== undefined) return error
         if (loading) return t('panel.loading')
         if (info === undefined) return t('panel.vcsBase', { base: vcsKind === null ? '' : vcsKind.toUpperCase() })
@@ -1120,7 +1120,7 @@ window.__ModuleLoader__.load({
           h(Styles),
           head,
           baseLine === undefined ? null : h('div', { className: 'dshc-base' }, baseLine),
-          h('div', { className: 'dshc-placeholder' }, vcsMode ? t('panel.noVcsChanges') : t('panel.empty')),
+          h('div', { className: 'dshc-placeholder' }, t('panel.empty')),
         )
       }
 
@@ -1188,7 +1188,8 @@ window.__ModuleLoader__.load({
             ? t('panel.binary')
             : shown.kind === 'oversized'
               ? t('panel.oversized')
-              : shown.coarse === true ? t('panel.coarse') : t('panel.noHunks'),
+              : shown.coarse === true ? t('panel.coarse')
+                : (vcsMode ? t('panel.noVcsChanges') : t('panel.noHunks')),
         )
       } else {
         diffHead = h(

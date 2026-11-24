@@ -40,7 +40,7 @@ const checks = {
   // merging + single continuous diff
   'files merged by path': host.includes('const byPath = new Map()'),
   'review unit is the newest recording': host.includes('handled: latest?.handled === true'),
-  'diff is one continuous list': host.includes('const hunks = diff.hunks.map') && host.includes('round: firstSeen.get'),
+  'diff is one continuous list': host.includes('const hunks = diff.hunks.map') && host.includes('originTurn: origin.turn'),
   'annotations never reach a write': !host.includes('dshc-round'),
   // folding
   'file text endpoint exists': host.includes('const buildFileText = async'),
@@ -61,7 +61,7 @@ const clientChecks = {
   'no round chip in the file list': !client.includes("className: 'dshc-rounds'"),
   'one continuous diff body': client.includes("className: 'dshc-diff__body' }, rows"),
   'round tag rides in the hunk header': client.includes("className: 'dshc-hunk__round'"),
-  'round tag only when rounds differ': client.includes('annotateRounds'),
+  'every hunk is annotated': client.includes('originTurn: hunk.originTurn'),
   'no sticky rows in the diff': !client.includes('position:sticky'),
   'fold bar for unchanged lines': client.includes("className: 'dshc-fold'"),
   'code text keeps primary colour': !client.includes('code-diff-added') && !client.includes('code-diff-deleted'),

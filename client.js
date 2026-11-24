@@ -77,6 +77,7 @@ window.__ModuleLoader__.load({
         'diff.foldHint': '收起',
         'panel.round': '第 {turn} 轮改动',
         'panel.roundShort': '第 {turn} 轮',
+        'panel.roundHint': '这一块是第 {turn} 轮的改动（该文件的第 {index} 次记录）',
         'panel.coarseTag': '整文件替换',
         'panel.restored': '来自上一次运行的存档',
         'panel.restoredBadge': '存档',
@@ -152,7 +153,8 @@ window.__ModuleLoader__.load({
         'diff.fold': 'Collapse unchanged lines',
         'diff.foldHint': 'collapse',
         'panel.round': 'Turn {turn}',
-        'panel.roundShort': 'round {turn}',
+        'panel.roundShort': 'turn {turn}',
+        'panel.roundHint': 'Introduced by turn {turn} (recording {index} for this file)',
         'panel.coarseTag': 'whole-file',
         'panel.restored': 'Restored from a previous run',
         'panel.restoredBadge': 'restored',
@@ -753,7 +755,7 @@ window.__ModuleLoader__.load({
     }
 
     function HunkView(props) {
-      const { hunk, state, active, round, coarse } = props
+      const { hunk, state, active, round, originTurn, coarse } = props
       const ref = useRef(null)
       useEffect(() => {
         if (active && ref.current) ref.current.scrollIntoView({ block: 'nearest' })
@@ -777,8 +779,10 @@ window.__ModuleLoader__.load({
           h('span', { className: 'dshc-hunk__range' }, range),
           round === undefined
             ? null
-            : h('span', { className: 'dshc-hunk__round', title: t('panel.round', { turn: round }) },
-              t('panel.roundShort', { turn: round })),
+            : h('span', {
+              className: 'dshc-hunk__round',
+              title: t('panel.roundHint', { turn: originTurn ?? round, index: round }),
+            }, t('panel.roundShort', { turn: originTurn ?? round })),
           coarse === true ? h('span', { className: 'dshc-hunk__round' }, t('panel.coarseTag')) : null,
         ),
         rows.map((row, index) => h(
@@ -851,16 +855,6 @@ window.__ModuleLoader__.load({
       )
       const current = diff?.ok === true ? diff.cursor : undefined
       const progress = diff?.ok === true ? diff.progress ?? { decided: 0, total: 0 } : { decided: 0, total: 0 }
-
-      // The round tag earns its place only when this file's hunks really come
-      // from different rounds. When they all came from one round, printing the
-      // same label on every header is noise and reads as round-based grouping.
-      const distinctRounds = useMemo(() => {
-        const seen = new Set()
-        for (const hunk of hunks) seen.add(hunk.round)
-        return seen
-      }, [hunks])
-      const annotateRounds = distinctRounds.size > 1
 
       // Fold state per hunk gap: keyed by the gap's index so expanding one does
       // not disturb the others. Collapsed by default, like an SVN diff.
@@ -1220,16 +1214,17 @@ window.__ModuleLoader__.load({
               }
             }
           }
-          // The round label travels with the hunk header instead of taking its
-          // own sticky row: no section divider, nothing to overlap while
-          // scrolling, and nothing that could reach a code line.
+          // Every hunk states which change it belongs to. The tag rides in the
+          // header line, so it never overlaps on scroll and never becomes part of
+          // a code line.
           const rounds = diff.rounds ?? 1
           rows.push(h(HunkView, {
             key: `hunk-${hunk.idx}`,
             hunk,
             state: diff.states?.[hunk.idx],
             active: current !== undefined && current.hunkIdx === hunk.idx,
-            round: annotateRounds ? (hunk.round ?? rounds) : undefined,
+            round: hunk.round ?? rounds,
+            originTurn: hunk.originTurn,
             coarse: diff.coarse === true,
           }))
           previousEnd = hunk.newStart + hunk.newLines

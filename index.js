@@ -1117,42 +1117,73 @@ export function apply(ctx, config) {
       return { ...base, hunks: [], cursor: undefined, progress: { decided: 0, total: 0 } }
     }
 
-    // Signature of a hunk's actual edit: its added and removed lines. Positions
-    // shift between recordings as the file grows, content does not.
-    const signature = (hunk) => {
-      const added = []
-      const removed = []
-      for (const line of hunk.lines ?? []) {
-        if (line[0] === '+') added.push(line.slice(1))
-        else if (line[0] === '-') removed.push(line.slice(1))
-      }
-      return `${added.join('\n')}\u0001${removed.join('\n')}`
-    }
+    // Which recording first introduced each hunk.
+    //
+    // An exact signature match is too strict: the newest recording's hunk usually
+    // also contains the lines earlier recordings added (every recording re-diffs
+    // from the turn baseline), so it would never match and every hunk would be
+    // credited to the newest turn. Instead a hunk is attributed to the OLDEST
+    // recording whose added lines are all present in it — that is the change this
+    // block traces back to.
+    const addedOf = (hunk) => (hunk.lines ?? [])
+      .filter((line) => line[0] === '+')
+      .map((line) => line.slice(1))
 
-    // Which round first introduced each signature, oldest recording winning.
-    const firstSeen = new Map()
+    const earlierParts = []
     if (merged.parts.length > 1) {
       for (let index = 0; index < merged.parts.length - 1; index += 1) {
         const part = merged.parts[index]
         const earlier = await diffOf(sessionId, part.seq, path, signal)
         if (!earlier.ok || earlier.diff.kind !== 'text') continue
-        for (const hunk of earlier.diff.hunks) {
-          const key = signature(hunk)
-          if (!firstSeen.has(key)) firstSeen.set(key, index + 1)
-        }
+        earlierParts.push({ round: index + 1, turn: part.turn, hunks: earlier.diff.hunks })
       }
     }
 
-    const hunks = diff.hunks.map((hunk, index) => ({
-      idx: index,
-      oldStart: hunk.oldStart,
-      oldLines: hunk.oldLines,
-      newStart: hunk.newStart,
-      newLines: hunk.newLines,
-      lines: hunk.lines,
-      // 1-based round this hunk first appeared in; the newest round by default.
-      round: firstSeen.get(signature(hunk)) ?? merged.parts.length,
-    }))
+    const latestPart = merged.parts[merged.parts.length - 1]
+    const latestOrigin = { round: merged.parts.length, turn: latestPart?.turn ?? batch.turn }
+
+    const originOf = (hunk) => {
+      const added = addedOf(hunk)
+      if (added.length === 0) {
+        // A pure deletion traces back by its removed lines.
+        const removed = (hunk.lines ?? []).filter((line) => line[0] === '-').map((line) => line.slice(1))
+        for (const part of earlierParts) {
+          for (const earlier of part.hunks) {
+            const earlierRemoved = (earlier.lines ?? []).filter((line) => line[0] === '-').map((line) => line.slice(1))
+            if (earlierRemoved.length > 0 && earlierRemoved.every((line) => removed.includes(line))) {
+              return { round: part.round, turn: part.turn }
+            }
+          }
+        }
+        return latestOrigin
+      }
+      const present = new Set(added)
+      for (const part of earlierParts) {
+        for (const earlier of part.hunks) {
+          const earlierAdded = addedOf(earlier)
+          if (earlierAdded.length > 0 && earlierAdded.every((line) => present.has(line))) {
+            return { round: part.round, turn: part.turn }
+          }
+        }
+      }
+      return latestOrigin
+    }
+
+    const hunks = diff.hunks.map((hunk, index) => {
+      const origin = originOf(hunk)
+      return {
+        idx: index,
+        oldStart: hunk.oldStart,
+        oldLines: hunk.oldLines,
+        newStart: hunk.newStart,
+        newLines: hunk.newLines,
+        lines: hunk.lines,
+        // Which change this hunk belongs to: its ordinal among the recordings
+        // that touched this file, and the conversation turn it came from.
+        round: origin.round,
+        originTurn: origin.turn,
+      }
+    })
 
     const cursor = hunks.find((hunk) => states[hunk.idx] === undefined)
     return {

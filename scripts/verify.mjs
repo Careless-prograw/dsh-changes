@@ -60,7 +60,9 @@ const clientChecks = {
   'no round badge in the bar': !client.includes("'bar.queueBadge'"),
   'no round chip in the file list': !client.includes("className: 'dshc-rounds'"),
   'one continuous diff body': client.includes("className: 'dshc-diff__body' }, rows"),
-  'per-hunk round annotation': client.includes("className: 'dshc-round'"),
+  'round tag rides in the hunk header': client.includes("className: 'dshc-hunk__round'"),
+  'round tag only when rounds differ': client.includes('annotateRounds'),
+  'no sticky rows in the diff': !client.includes('position:sticky'),
   'fold bar for unchanged lines': client.includes("className: 'dshc-fold'"),
 }
 for (const [label, present] of Object.entries(clientChecks)) {

@@ -76,6 +76,8 @@ window.__ModuleLoader__.load({
         'diff.fold': '收起未改动的行',
         'diff.foldHint': '收起',
         'panel.round': '第 {turn} 轮改动',
+        'panel.roundShort': '第 {turn} 轮',
+        'panel.coarseTag': '整文件替换',
         'panel.restored': '来自上一次运行的存档',
         'panel.restoredBadge': '存档',
         'panel.rollbackHint': '整区回退会把工作区强制对齐到所选版本，丢弃其后的所有改动。先切换到 Git / SVN 基线并选择版本点。',
@@ -150,6 +152,8 @@ window.__ModuleLoader__.load({
         'diff.fold': 'Collapse unchanged lines',
         'diff.foldHint': 'collapse',
         'panel.round': 'Turn {turn}',
+        'panel.roundShort': 'round {turn}',
+        'panel.coarseTag': 'whole-file',
         'panel.restored': 'Restored from a previous run',
         'panel.restoredBadge': 'restored',
         'panel.rollbackHint': 'Rolling back forces the workspace onto the chosen version and discards everything after it. Switch to a Git / SVN baseline and pick a version point first.',
@@ -388,7 +392,9 @@ window.__ModuleLoader__.load({
 .dshc-hunk[data-active="true"]{box-shadow:inset 3px 0 0 var(--dsw-alias-state-business-primary,#6c8cff)}
 .dshc-hunk[data-state="accept"]{opacity:.5}
 .dshc-hunk[data-state="reject"]{opacity:.5}
-.dshc-hunk__head{padding:3px 10px;background:var(--dsw-alias-fill-l1,rgba(127,127,127,.1));color:var(--dsw-alias-label-secondary,#9aa0ad);font-size:11px}
+.dshc-hunk__head{display:flex;align-items:center;gap:8px;padding:3px 10px;background:var(--dsw-alias-fill-l1,rgba(127,127,127,.1));color:var(--dsw-alias-label-secondary,#9aa0ad);font-size:11px}
+.dshc-hunk__range{font-family:var(--dsw-font-mono,ui-monospace,Menlo,Consolas,monospace)}
+.dshc-hunk__round{margin-left:auto;font-size:10.5px;color:var(--dsw-alias-label-tertiary,#6f7683);border:1px solid var(--dsw-alias-border-l2,#303239);border-radius:var(--dsw-radius-xs,4px);padding:0 5px;white-space:nowrap}
 .dshc-line{display:flex;white-space:pre}
 .dshc-line__no{width:34px;flex:none;text-align:right;padding-right:8px;color:var(--dsw-alias-label-tertiary,#6f7683);border-right:1px solid var(--dsw-alias-border-l2,#303239);margin-right:8px;user-select:none}
 .dshc-line__txt{flex:1;padding-right:10px}
@@ -403,11 +409,7 @@ window.__ModuleLoader__.load({
 .dshc-fold{display:flex;align-items:center;gap:8px;width:100%;padding:3px 10px;border:0;border-top:1px solid var(--dsw-alias-border-l2,#303239);border-bottom:1px solid var(--dsw-alias-border-l2,#303239);background:var(--dsw-alias-fill-l2,rgba(127,127,127,.08));color:var(--dsw-alias-label-tertiary,#6f7683);font:inherit;font-size:10.5px;cursor:pointer;text-align:left}
 .dshc-fold:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.16));color:var(--dsw-alias-label-secondary,#9aa0ad)}
 .dshc-fold__sign{font-family:var(--dsw-font-mono,ui-monospace,Menlo,Consolas,monospace)}
-.dshc-round{display:flex;align-items:center;gap:6px;padding:3px 10px;background:var(--dsw-alias-fill-l1,rgba(127,127,127,.14));border-top:1px solid var(--dsw-alias-border-l2,#303239);border-bottom:1px solid var(--dsw-alias-border-l2,#303239);font-size:10.5px;color:var(--dsw-alias-label-secondary,#9aa0ad);position:sticky;top:0;z-index:1}
-.dshc-round:first-child{border-top:0}
-.dshc-round[data-handled="true"]{opacity:.5}
-.dshc-round__no{font-family:var(--dsw-font-mono,ui-monospace,Menlo,Consolas,monospace);color:var(--dsw-alias-label-primary,#f2f3f5)}
-.dshc-rounds{flex:none;font-size:10.5px;color:var(--dsw-alias-label-tertiary,#6f7683);font-family:var(--dsw-font-mono,ui-monospace,Menlo,Consolas,monospace)}
+
 .dshc-cfg{display:flex;align-items:flex-start;gap:16px;padding:14px;border:1px solid var(--dsw-alias-border-l2,#303239);border-radius:var(--dsw-radius-md,10px);background:var(--dsw-alias-fill-l1,rgba(127,127,127,.06));color:var(--dsw-alias-label-primary,#f2f3f5);font-size:13px}
 .dshc-cfg__main{min-width:0;flex:1}
 .dshc-cfg__title{font-size:13px;font-weight:600}
@@ -747,12 +749,16 @@ window.__ModuleLoader__.load({
     }
 
     function HunkView(props) {
-      const { hunk, state, active } = props
+      const { hunk, state, active, round, coarse } = props
       const ref = useRef(null)
       useEffect(() => {
         if (active && ref.current) ref.current.scrollIntoView({ block: 'nearest' })
       }, [active])
       const rows = hunkRows(hunk)
+      // The round annotation rides in the hunk header, after the range: it reads
+      // as a note on that hunk rather than a divider between sections, it cannot
+      // overlap anything while scrolling, and it never touches a code line.
+      const range = `@@ -${hunk.oldStart},${hunk.oldLines} +${hunk.newStart},${hunk.newLines} @@`
       return h(
         'div',
         {
@@ -761,7 +767,16 @@ window.__ModuleLoader__.load({
           'data-active': active,
           'data-state': state ?? undefined,
         },
-        h('div', { className: 'dshc-hunk__head' }, `@@ -${hunk.oldStart},${hunk.oldLines} +${hunk.newStart},${hunk.newLines} @@`),
+        h(
+          'div',
+          { className: 'dshc-hunk__head' },
+          h('span', { className: 'dshc-hunk__range' }, range),
+          round === undefined
+            ? null
+            : h('span', { className: 'dshc-hunk__round', title: t('panel.round', { turn: round }) },
+              t('panel.roundShort', { turn: round })),
+          coarse === true ? h('span', { className: 'dshc-hunk__round' }, t('panel.coarseTag')) : null,
+        ),
         rows.map((row, index) => h(
           'div',
           { key: index, className: 'dshc-line', 'data-kind': row.kind },
@@ -828,6 +843,16 @@ window.__ModuleLoader__.load({
       )
       const current = diff?.ok === true ? diff.cursor : undefined
       const progress = diff?.ok === true ? diff.progress ?? { decided: 0, total: 0 } : { decided: 0, total: 0 }
+
+      // The round tag earns its place only when this file's hunks really come
+      // from different rounds. When they all came from one round, printing the
+      // same label on every header is noise and reads as round-based grouping.
+      const distinctRounds = useMemo(() => {
+        const seen = new Set()
+        for (const hunk of hunks) seen.add(hunk.round)
+        return seen
+      }, [hunks])
+      const annotateRounds = distinctRounds.size > 1
 
       // Fold state per hunk gap: keyed by the gap's index so expanding one does
       // not disturb the others. Collapsed by default, like an SVN diff.
@@ -1099,9 +1124,6 @@ window.__ModuleLoader__.load({
         onClick: () => run({ op: 'acceptFile', path }),
       }, t('panel.accept'))
 
-      /** The numbered marker that names which round a block of hunks came from. */
-      const roundLabel = (index) => ['①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨'][index] ?? String(index + 1)
-
       if (diff === undefined) {
         diffHead = h('div', { className: 'dshc-diff__head' }, h('span', { className: 'dshc-diff__path' }, shorten(selected.path)))
         diffBody = h('div', { className: 'dshc-placeholder' }, t('panel.loading'))
@@ -1189,21 +1211,17 @@ window.__ModuleLoader__.load({
               }
             }
           }
-          // The annotation that names the round this hunk first appeared in. A
-          // rendering-only row: it never becomes part of a code line, and never
-          // reaches the file the plugin writes back.
+          // The round label travels with the hunk header instead of taking its
+          // own sticky row: no section divider, nothing to overlap while
+          // scrolling, and nothing that could reach a code line.
           const rounds = diff.rounds ?? 1
-          if (rounds > 1) {
-            rows.push(h('div', { key: `note-${hunk.idx}`, className: 'dshc-round' },
-              h('span', { className: 'dshc-round__no' }, roundLabel((hunk.round ?? rounds) - 1)),
-              h('span', { className: 'dshc-round__text' }, t('panel.round', { turn: hunk.round ?? rounds })),
-            ))
-          }
           rows.push(h(HunkView, {
             key: `hunk-${hunk.idx}`,
             hunk,
             state: diff.states?.[hunk.idx],
             active: current !== undefined && current.hunkIdx === hunk.idx,
+            round: annotateRounds ? (hunk.round ?? rounds) : undefined,
+            coarse: diff.coarse === true,
           }))
           previousEnd = hunk.newStart + hunk.newLines
         })

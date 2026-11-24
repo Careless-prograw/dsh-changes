@@ -4,7 +4,9 @@
  * HTTP tests exercise the Host half only, so a broken client render (a temporal
  * dead zone reference, an undeclared identifier) would ship silently. This runs
  * the real factory from client.js, calls `apply(ctx)` against a stub Cordis
- * context, then invokes every slot renderer it registered.
+ * context, then *actually renders* every element tree it registered — walking
+ * into nested function components, because a TDZ bug inside a child component is
+ * invisible when only the wrapper element gets built.
  */
 import fs from 'node:fs'
 
@@ -40,21 +42,43 @@ const react = {
 // --- module loader shim ------------------------------------------------------
 let factory
 globalThis.window = globalThis
-globalThis.window.__ModuleLoader__ = {
-  load: (entry) => { factory = entry.factory },
-}
+globalThis.window.__ModuleLoader__ = { load: (entry) => { factory = entry.factory } }
 const requireShim = (id) => {
   if (id === 'react') return react
   throw new Error(`unexpected require('${id}')`)
 }
 
-// Execute client.js so the loader receives the factory, then run that factory.
 new Function('require', 'window', 'globalThis', source)(requireShim, globalThis, globalThis)
 if (typeof factory !== 'function') throw new Error('loader did not receive a factory')
-
 const plugin = factory(requireShim)
 if (plugin === undefined || typeof plugin.apply !== 'function') {
   throw new Error('factory did not return a plugin object with apply()')
+}
+
+// --- render the tree ---------------------------------------------------------
+const MAX_DEPTH = 60
+
+const renderNode = (node, depth) => {
+  if (node === null || node === undefined || typeof node !== 'object') return 1
+  if (depth > MAX_DEPTH) throw new Error('render tree too deep (probable cycle)')
+  let count = 0
+  const { type, props } = node
+  if (typeof type === 'function') {
+    // A function component: execute it, then walk what it returned. Class
+    // components (the error boundary) are skipped — their render needs a real
+    // React reconciler.
+    const isClass = /^class\s/.test(Function.prototype.toString.call(type))
+    if (!isClass) {
+      cursor = 0
+      count += 1
+      count += renderNode(type(props ?? {}), depth + 1)
+    }
+  }
+  const children = props?.children
+  for (const child of Array.isArray(children) ? children : [children]) {
+    count += renderNode(child, depth + 1)
+  }
+  return count
 }
 
 // --- stub Cordis context -----------------------------------------------------
@@ -66,8 +90,6 @@ const stubCtx = {
     subscribe: () => () => undefined,
   },
   slots: {
-    // `inject` gates a registration on a slot existing; the stub reports that it
-    // does, so the registration runs.
     inject: (_name, run) => run(),
     register: (spec, render) => {
       const key = `${spec.name}${spec.key === undefined ? '' : `#${spec.key}`}`
@@ -83,22 +105,23 @@ const stubCtx = {
 
 plugin.apply(stubCtx)
 console.log(`slot renderers registered: ${slots.size}`)
-for (const key of slots.keys()) console.log(`  ${key}`)
 
-// --- invoke each renderer ----------------------------------------------------
 let failures = 0
+let totalComponents = 0
 for (const [key, render] of slots) {
   cursor = 0
   state.length = 0
   try {
-    const element = render({ sessionId: 'probe-session' })
-    console.log(`  render ${key} -> ${element === null || element === undefined ? 'null' : 'ok'}`)
+    const components = renderNode(render({ sessionId: 'probe-session' }), 0)
+    totalComponents += components
+    console.log(`  ${key} -> rendered ${components} component(s)`)
   } catch (error) {
     failures += 1
-    console.log(`  render ${key} -> THREW: ${error.message}`)
+    console.log(`  ${key} -> THREW: ${error.message}`)
   }
 }
 
 if (slots.size === 0) throw new Error('the plugin registered no slot renderer')
-if (failures > 0) throw new Error(`${failures} renderer(s) threw`)
-console.log('OK: every slot renderer runs without throwing')
+if (totalComponents === 0) throw new Error('no component was actually executed')
+if (failures > 0) throw new Error(`${failures} slot(s) threw while rendering`)
+console.log(`OK: rendered ${totalComponents} component(s) across ${slots.size} slot(s) without throwing`)

@@ -1,5 +1,14 @@
 # 更新记录
 
+## 1.6.4
+
+修 1.6.3 遗留的面板崩溃：`Cannot access 'showHandled' before initialization`。
+
+- 原因：`showHandled` 的 `useState` 声明被放到了选中逻辑之后，而那个逻辑的**依赖数组在渲染期间求值**，于是先访问后声明，触发暂时性死区。现在它与其它 state 一起声明在组件开头。
+- **渲染冒烟测试此前有盲区**：它只构建了元素树、从未执行内层组件（`h(Boundary, …, h(ChangesPanel))` 里的 `ChangesPanel` 根本没被调用），所以两版崩溃都没拦住。现在测试会**递归执行函数组件**（29 个组件、4 个槽位）。
+- 并且验证了它真能抓住这个 bug：把声明移回原处跑测试，精确报出 `THREW: Cannot access 'showHandled' before initialization` 并以非零退出。
+- 顺带把 `client.js` 的行尾统一为 LF（此前混用 CRLF 与 LF，导致文本匹配类脚本时好时坏）。
+
 ## 1.6.3
 
 修 1.6.2 引入的面板崩溃：`Cannot access 'pendingFiles' before initialization`。

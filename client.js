@@ -845,6 +845,10 @@ window.__ModuleLoader__.load({
       const [busy, setBusy] = useState('')
       const [notice, setNotice] = useState(undefined)
       const [error, setError] = useState('')
+      // Declared with the other state: the selection effect below reads it while
+      // rendering (its dependency array is evaluated on every render), so it must
+      // not be declared after that effect.
+      const [showHandled, setShowHandled] = useState(false)
       const focus = useStore(focusStore)
       useStore(localeStore)
 
@@ -927,10 +931,6 @@ window.__ModuleLoader__.load({
       )
       const current = vcsMode ? undefined : (shown?.ok === true ? shown.cursor : undefined)
       const progress = shown?.ok === true ? shown.progress ?? { decided: 0, total: 0 } : { decided: 0, total: 0 }
-
-      // Handled files are hidden by default so the list length equals the pending
-      // count the bar and the badge show.
-      const [showHandled, setShowHandled] = useState(false)
 
       // Fold state per untouched region: keyed by position so expanding one does
       // not disturb the others. Collapsed by default, like an SVN diff.

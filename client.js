@@ -387,7 +387,7 @@ window.__ModuleLoader__.load({
 .dshc-diff__head{display:flex;align-items:center;gap:8px;padding:7px 10px;border-bottom:1px solid var(--dsw-alias-border-l2,#303239);background:var(--dsw-alias-fill-l1,rgba(127,127,127,.1));font-size:11.5px;flex:none}
 .dshc-diff__path{flex:1;min-width:0;font-family:var(--dsw-font-mono,ui-monospace,Menlo,Consolas,monospace);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .dshc-progress{flex:none;color:var(--dsw-alias-label-secondary,#9aa0ad);font-family:var(--dsw-font-mono,ui-monospace,Menlo,Consolas,monospace);font-size:11px}
-.dshc-diff__body{flex:1;overflow:auto;font-family:var(--dsw-font-mono,ui-monospace,Menlo,Consolas,monospace);font-size:11.5px;line-height:1.62}
+.dshc-diff__body{flex:1;overflow:auto;font-family:var(--dsw-font-mono,ui-monospace,Menlo,Consolas,monospace);font-size:12px;line-height:22px}
 .dshc-hunk{border-bottom:1px solid var(--dsw-alias-border-l2,#303239);scroll-margin-top:6px}
 .dshc-hunk[data-active="true"]{box-shadow:inset 3px 0 0 var(--dsw-alias-state-business-primary,#6c8cff)}
 .dshc-hunk[data-state="accept"]{opacity:.5}
@@ -395,14 +395,18 @@ window.__ModuleLoader__.load({
 .dshc-hunk__head{display:flex;align-items:center;gap:8px;padding:3px 10px;background:var(--dsw-alias-fill-l1,rgba(127,127,127,.1));color:var(--dsw-alias-label-secondary,#9aa0ad);font-size:11px}
 .dshc-hunk__range{font-family:var(--dsw-font-mono,ui-monospace,Menlo,Consolas,monospace)}
 .dshc-hunk__round{margin-left:auto;font-size:10.5px;color:var(--dsw-alias-label-tertiary,#6f7683);border:1px solid var(--dsw-alias-border-l2,#303239);border-radius:var(--dsw-radius-xs,4px);padding:0 5px;white-space:nowrap}
-.dshc-line{display:flex;white-space:pre}
-.dshc-line__no{width:34px;flex:none;text-align:right;padding-right:8px;color:var(--dsw-alias-label-tertiary,#6f7683);border-right:1px solid var(--dsw-alias-border-l2,#303239);margin-right:8px;user-select:none}
-.dshc-line__txt{flex:1;padding-right:10px}
+/* Line rendering follows the host's own diff: the row background marks the
+   change, the gutter and the sign carry its colour, and the CODE TEXT keeps the
+   primary label colour so it stays readable. */
+.dshc-line{display:flex;white-space:pre;color:var(--dsw-alias-label-primary,#f2f3f5)}
+.dshc-line__no{width:34px;flex:none;text-align:right;padding-right:6px;color:var(--dsw-alias-label-tertiary,#6f7683);user-select:none}
+.dshc-line__sign{width:14px;flex:none;text-align:center;user-select:none;color:var(--dsw-alias-label-tertiary,#6f7683)}
+.dshc-line__txt{flex:1;padding-right:10px;color:inherit}
 .dshc-line[data-kind="ctx"] .dshc-line__txt{color:var(--dsw-alias-label-secondary,#aab0bd)}
-.dshc-line[data-kind="add"]{background:var(--dsw-alias-file-diff-added-bg,rgba(87,197,111,.12))}
-.dshc-line[data-kind="add"] .dshc-line__txt{color:var(--dsw-alias-code-diff-added,#8fdc9f)}
-.dshc-line[data-kind="del"]{background:var(--dsw-alias-file-diff-deleted-bg,rgba(240,112,112,.12))}
-.dshc-line[data-kind="del"] .dshc-line__txt{color:var(--dsw-alias-code-diff-deleted,#f19a9a)}
+.dshc-line[data-kind="add"]{--dshc-gutter:var(--dsw-alias-file-diff-added-gutter,rgba(87,197,111,.18));--dshc-marker:var(--dsw-alias-file-diff-added-marker,#57c56f);background:var(--dsw-alias-file-diff-added-bg,rgba(87,197,111,.12))}
+.dshc-line[data-kind="del"]{--dshc-gutter:var(--dsw-alias-file-diff-deleted-gutter,rgba(240,112,112,.18));--dshc-marker:var(--dsw-alias-file-diff-deleted-marker,#f07070);background:var(--dsw-alias-file-diff-deleted-bg,rgba(240,112,112,.12))}
+.dshc-line[data-kind="add"] .dshc-line__no,.dshc-line[data-kind="del"] .dshc-line__no{background:var(--dshc-gutter);color:var(--dshc-marker);font-weight:600}
+.dshc-line[data-kind="add"] .dshc-line__sign,.dshc-line[data-kind="del"] .dshc-line__sign{color:var(--dshc-marker);font-weight:700}
 .dshc-placeholder{padding:16px 14px;font-size:12px;color:var(--dsw-alias-label-secondary,#9aa0ad);line-height:1.6}
 .dshc-error{padding:8px 12px;font-size:12px;color:var(--dsw-alias-state-error-primary,#f07070);border-bottom:1px solid var(--dsw-alias-border-l2,#303239);display:flex;gap:8px;align-items:center}
 .dshc-chip{flex:none;font-family:var(--dsw-font-mono,ui-monospace,Menlo,Consolas,monospace);font-size:10.5px;color:var(--dsw-alias-label-secondary,#9aa0ad);border:1px solid var(--dsw-alias-border-l2,#303239);border-radius:var(--dsw-radius-xs,4px);padding:0 4px}
@@ -782,7 +786,11 @@ window.__ModuleLoader__.load({
           { key: index, className: 'dshc-line', 'data-kind': row.kind },
           h('span', { className: 'dshc-line__no' }, row.oldNo ?? ''),
           h('span', { className: 'dshc-line__no' }, row.newNo ?? ''),
-          h('span', { className: 'dshc-line__txt' }, row.kind === 'add' ? `+${row.text}` : row.kind === 'del' ? `-${row.text}` : ` ${row.text}`),
+          // The sign carries the add/remove colour; the code text stays at the
+          // primary label colour so it remains readable, which is how the host's
+          // own diff renders lines.
+          h('span', { className: 'dshc-line__sign' }, row.kind === 'add' ? '+' : row.kind === 'del' ? '-' : ' '),
+          h('span', { className: 'dshc-line__txt' }, row.text),
         )),
       )
     }
@@ -1206,7 +1214,8 @@ window.__ModuleLoader__.load({
                 rows.push(h('div', { key: `gap-${index}-${line}`, className: 'dshc-line', 'data-kind': 'ctx' },
                   h('span', { className: 'dshc-line__no' }, ''),
                   h('span', { className: 'dshc-line__no' }, String(line)),
-                  h('span', { className: 'dshc-line__txt' }, ` ${fileLines[line - 1] ?? ''}`),
+                  h('span', { className: 'dshc-line__sign' }, ' '),
+                  h('span', { className: 'dshc-line__txt' }, fileLines[line - 1] ?? ''),
                 ))
               }
             }

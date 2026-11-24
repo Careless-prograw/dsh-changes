@@ -64,6 +64,8 @@ const clientChecks = {
   'round tag only when rounds differ': client.includes('annotateRounds'),
   'no sticky rows in the diff': !client.includes('position:sticky'),
   'fold bar for unchanged lines': client.includes("className: 'dshc-fold'"),
+  'code text keeps primary colour': !client.includes('code-diff-added') && !client.includes('code-diff-deleted'),
+  'gutter and sign carry the colour': client.includes('--dshc-marker') && client.includes('dshc-line__sign'),
 }
 for (const [label, present] of Object.entries(clientChecks)) {
   console.log(`  ${present ? 'ok  ' : 'MISS'} ${label}`)

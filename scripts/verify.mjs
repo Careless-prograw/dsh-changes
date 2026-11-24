@@ -52,6 +52,9 @@ const checks = {
   'vcs baseline diffs one file': host.includes('const vcsFileDiff = async'),
   'unified diff parser': host.includes('const parseUnifiedDiff = (text)'),
   'untracked file is a whole-file add': host.includes('untracked: true'),
+  'svn status warning is an error': host.includes('/svn: (warning|E\\d+)/i'),
+  'svn status parsed by pattern': host.includes('(.{1,7})'),
+  'vcs listing names its base': host.includes('svnWorkingCopyInfo'),
 }
 
 for (const [label, present] of Object.entries(checks)) {
@@ -80,6 +83,8 @@ const clientChecks = {
   'gutter and sign carry the colour': client.includes('--dshc-marker') && client.includes('dshc-line__sign'),
   'baseline swaps the source, not the layout': client.includes('vcs-state') && client.includes('vcs-diff') && !client.includes('const refList = h('),
   'vcs baseline is read-only': client.includes('panel.vcsReadOnly'),
+  'diff branch guards the loading state': client.includes('if (shown === undefined)'),
+  'vcs mode names the comparison base': client.includes('panel.vcsBaseSvn') && client.includes('panel.vcsBaseGit'),
 }
 for (const [label, present] of Object.entries(clientChecks)) {
   console.log(`  ${present ? 'ok  ' : 'MISS'} ${label}`)

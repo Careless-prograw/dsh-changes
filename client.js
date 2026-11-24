@@ -165,6 +165,9 @@ window.__ModuleLoader__.load({
         'panel.rollbackHint': 'Rolling back forces the workspace onto the chosen version and discards everything after it. Switch to a Git / SVN baseline and pick a version point first.',
         'panel.vcsReadOnly': 'A VCS baseline is read-only comparison; switch back to the session snapshot to accept or revert',
         'panel.vcsBase': 'compared with {base}',
+        'panel.vcsBaseSvn': 'Compared with SVN BASE · r{revision} · {url}',
+        'panel.vcsBaseGit': 'Compared with Git HEAD · {revision} · branch {branch}',
+        'panel.noVcsChanges': 'The working copy has no local changes against the base',
         'panel.rollbackConfirm': 'Force the workspace to {ref}? Every change after that version is discarded and cannot be recovered.',
         'panel.rolledBack': 'Rolled back to {ref}',
         'panel.refEmpty': 'No version points',
@@ -419,6 +422,7 @@ window.__ModuleLoader__.load({
    it separates from its own row tint by lightness instead of matching it. The
    mix resolves per theme: lighter on a dark surface, darker on a light one. */
 .dshc-line[data-kind="add"] .dshc-line__txt,.dshc-line[data-kind="del"] .dshc-line__txt{color:color-mix(in srgb, var(--dshc-marker) 58%, var(--dsw-alias-label-primary,#f2f3f5))}
+.dshc-base{flex:none;padding:6px 10px;border-bottom:1px solid var(--dsw-alias-border-l2,#303239);color:var(--dsw-alias-label-tertiary,#6f7683);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .dshc-placeholder{padding:16px 14px;font-size:12px;color:var(--dsw-alias-label-secondary,#9aa0ad);line-height:1.6}
 .dshc-error{padding:8px 12px;font-size:12px;color:var(--dsw-alias-state-error-primary,#f07070);border-bottom:1px solid var(--dsw-alias-border-l2,#303239);display:flex;gap:8px;align-items:center}
 .dshc-chip{flex:none;font-family:var(--dsw-font-mono,ui-monospace,Menlo,Consolas,monospace);font-size:10.5px;color:var(--dsw-alias-label-secondary,#9aa0ad);border:1px solid var(--dsw-alias-border-l2,#303239);border-radius:var(--dsw-radius-xs,4px);padding:0 4px}
@@ -1082,13 +1086,36 @@ window.__ModuleLoader__.load({
       )
 
 
+      // Naming the base turns "暂无改动" from a dead end into something the reader
+      // can check: which working copy, which revision, which comparison.
+      const baseLine = (() => {
+        if (!vcsMode) return undefined
+        const info = vcsStateLive.data?.info
+        const loading = vcsStateLive.loading && vcsStateLive.data === undefined
+        const error = vcsStateLive.data?.ok === false ? vcsStateLive.data.error : undefined
+        if (error !== undefined) return error
+        if (loading) return t('panel.loading')
+        if (info === undefined) return t('panel.vcsBase', { base: vcsKind === null ? '' : vcsKind.toUpperCase() })
+        if (vcsKind === 'svn') {
+          return t('panel.vcsBaseSvn', {
+            url: info.url ?? '?',
+            revision: info.revision ?? '?',
+          })
+        }
+        return t('panel.vcsBaseGit', {
+          revision: info.revision ?? '?',
+          branch: info.branch ?? '?',
+        })
+      })()
+
       if (files.length === 0) {
         return h(
           'div',
           { className: 'dshc-panel' },
           h(Styles),
           head,
-          h('div', { className: 'dshc-placeholder' }, t('panel.empty')),
+          baseLine === undefined ? null : h('div', { className: 'dshc-base' }, baseLine),
+          h('div', { className: 'dshc-placeholder' }, vcsMode ? t('panel.noVcsChanges') : t('panel.empty')),
         )
       }
 
@@ -1129,17 +1156,17 @@ window.__ModuleLoader__.load({
         onClick: () => run({ op: 'acceptFile', path }),
       }, t('panel.accept'))
 
-      if (diff === undefined) {
+      if (shown === undefined) {
         diffHead = h('div', { className: 'dshc-diff__head' }, h('span', { className: 'dshc-diff__path' }, shorten(selected.path)))
         diffBody = h('div', { className: 'dshc-placeholder' }, t('panel.loading'))
-        } else if (shown.ok === false) {
+      } else if (shown.ok === false) {
         diffHead = h(
           'div',
           { className: 'dshc-diff__head' },
           h('span', { className: 'dshc-diff__path' }, shown.path ?? shorten(selected.path)),
         )
         diffBody = h('div', { className: 'dshc-placeholder' }, shown.error ?? t('panel.diffUnavailable'))
-        } else if (shown.kind === 'binary' || shown.kind === 'oversized' || shown.coarse === true || hunks.length === 0) {
+      } else if (shown.kind === 'binary' || shown.kind === 'oversized' || shown.coarse === true || hunks.length === 0) {
         // Nothing hunk-level to review: only file-level actions apply.
         diffHead = h(
           'div',

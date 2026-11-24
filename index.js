@@ -1020,6 +1020,29 @@ export function apply(ctx, config) {
   }
 
   /**
+   * What a VCS baseline is actually comparing against: the repository URL and the
+   * base revision. Shown so an empty list is diagnosable instead of opaque.
+   */
+  const svnWorkingCopyInfo = async (cwd, signal) => {
+    const run = await runCommand(cwd, ['svn', 'info', '--non-interactive'], signal)
+    if (!run.ok) return undefined
+    const pick = (name) => {
+      const line = run.stdout.split('\n').find((item) => item.startsWith(`${name}:`))
+      return line === undefined ? undefined : line.slice(name.length + 1).trim()
+    }
+    return { url: pick('URL'), revision: pick('Revision'), root: pick('Working Copy Root Path') }
+  }
+
+  const gitRepoInfo = async (cwd, signal) => {
+    const head = await runCommand(cwd, ['git', 'rev-parse', '--short', 'HEAD'], signal)
+    const branch = await runCommand(cwd, ['git', 'rev-parse', '--abbrev-ref', 'HEAD'], signal)
+    return {
+      branch: branch.ok ? branch.stdout.trim() : undefined,
+      revision: head.ok ? head.stdout.trim() : undefined,
+    }
+  }
+
+  /**
    * Parse unified diff text into hunks.
    *
    * Both `git diff` and `svn diff` emit the same shape, so one parser serves the
@@ -1115,20 +1138,36 @@ export function apply(ctx, config) {
         }
         files.push({ path, display: path, status: code, added, deleted, untracked: code === '??' })
       }
-      return { ok: true, kind, base: 'HEAD', files }
+      return { ok: true, kind, base: 'HEAD', files, info: await gitRepoInfo(collected.cwd, signal) }
     }
 
     const status = await runCommand(collected.cwd, ['svn', 'status', '--non-interactive'], signal)
+    // `svn status` exits 0 even when the directory is not a working copy: it only
+    // writes a warning to stderr. Treating that as "no changes" is how the panel
+    // used to claim 暂无改动 on a checkout that plainly had modifications.
     if (!status.ok) return { ok: false, code: 'svn-failed', error: status.error }
+    const dialogue = `${status.stdout}\n${status.stderr}`
+    if (/svn: (warning|E\d+)/i.test(dialogue)) {
+      const line = dialogue.split('\n').map((item) => item.trim()).find((item) => item.startsWith('svn:')) ?? ''
+      return { ok: false, code: 'svn-failed', error: line.replace(/^svn:\s*(warning:\s*)?/, '') }
+    }
+    // Naming the working copy it actually measured turns an empty list from a
+    // dead end into something the reader can check.
+    const info = await svnWorkingCopyInfo(collected.cwd, signal)
     const files = []
     for (const raw of status.stdout.split('\n')) {
       if (raw.trim() === '') continue
-      const code = raw.slice(0, 1).trim()
-      const path = raw.slice(8).trim()
-      if (path === '') continue
-      files.push({ path, display: path, status: code, untracked: code === '?' })
+      // Seven status columns, then whitespace, then the path. Parsing by pattern
+      // keeps absolute paths working (svn prints those when it resolves another
+      // working copy's root).
+      const match = /^(.{1,7})\s+(.+)$/.exec(raw)
+      if (match === null) continue
+      const code = match[1].trim()
+      const path = match[2].trim().replace(/\\/g, '/')
+      if (path === '' || code === '') continue
+      files.push({ path, display: path, status: code.slice(0, 1), untracked: code.startsWith('?') })
     }
-    return { ok: true, kind, base: 'BASE', files }
+    return { ok: true, kind, base: 'BASE', files, info }
   }
 
   /** One file compared against the repository base, as reviewable hunks. */
@@ -1195,6 +1234,10 @@ export function apply(ctx, config) {
     const run = await runCommand(collected.cwd, ['svn', 'diff', '--non-interactive', path], signal)
     if (!run.ok) return { ok: false, code: 'svn-failed', error: run.error }
     const text = run.stdout
+    const stderrLine = run.stderr.split('\n').map((item) => item.trim()).find((item) => item.startsWith('svn:')) ?? ''
+    if (stderrLine !== '' && /svn: (warning|E\d+)/i.test(stderrLine)) {
+      return { ok: false, code: 'svn-failed', error: stderrLine.replace(/^svn:\s*(warning:\s*)?/, '') }
+    }
     if (text.includes('Cannot display:') || text.includes('(binary)')) {
       return { ok: true, kind, base: 'BASE', path, display, diffKind: 'binary', untracked: false, hunks: [] }
     }

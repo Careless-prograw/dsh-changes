@@ -76,8 +76,8 @@ window.__ModuleLoader__.load({
         'diff.fold': '收起未改动的行',
         'diff.foldHint': '收起',
         'panel.round': '第 {turn} 轮改动',
-        'panel.roundShort': '第 {turn} 轮',
-        'panel.roundHint': '这一块是第 {turn} 轮的改动（该文件的第 {index} 次记录）',
+        'panel.roundShort': '第 {count} 次改动',
+        'panel.roundHint': '这一块来自对该文件的第 {count} 次改动（发生在对话第 {turn} 轮）',
         'panel.coarseTag': '整文件替换',
         'panel.restored': '来自上一次运行的存档',
         'panel.restoredBadge': '存档',
@@ -153,8 +153,8 @@ window.__ModuleLoader__.load({
         'diff.fold': 'Collapse unchanged lines',
         'diff.foldHint': 'collapse',
         'panel.round': 'Turn {turn}',
-        'panel.roundShort': 'turn {turn}',
-        'panel.roundHint': 'Introduced by turn {turn} (recording {index} for this file)',
+        'panel.roundShort': 'change {count}',
+        'panel.roundHint': 'From change {count} to this file (conversation turn {turn})',
         'panel.coarseTag': 'whole-file',
         'panel.restored': 'Restored from a previous run',
         'panel.restoredBadge': 'restored',
@@ -781,8 +781,8 @@ window.__ModuleLoader__.load({
             ? null
             : h('span', {
               className: 'dshc-hunk__round',
-              title: t('panel.roundHint', { turn: originTurn ?? round, index: round }),
-            }, t('panel.roundShort', { turn: originTurn ?? round })),
+              title: t('panel.roundHint', { count: round, turn: originTurn ?? '?' }),
+            }, t('panel.roundShort', { count: round })),
           coarse === true ? h('span', { className: 'dshc-hunk__round' }, t('panel.coarseTag')) : null,
         ),
         rows.map((row, index) => h(
@@ -1223,7 +1223,7 @@ window.__ModuleLoader__.load({
             hunk,
             state: diff.states?.[hunk.idx],
             active: current !== undefined && current.hunkIdx === hunk.idx,
-            round: hunk.round ?? rounds,
+            round: rounds > 1 ? (hunk.round ?? rounds) : undefined,
             originTurn: hunk.originTurn,
             coarse: diff.coarse === true,
           }))

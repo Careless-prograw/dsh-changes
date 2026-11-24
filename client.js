@@ -104,6 +104,11 @@ window.__ModuleLoader__.load({
         'cfg.noChannel': '本页未提供配置读写通道',
         'cfg.readOnly': '当前 profile 无法保存配置',
         'cfg.saveFailed': '保存失败，开关已回弹',
+        'panel.vcsReadOnly': 'VCS 基线只做对比查看；接受 / 撤销请切回「会话快照」',
+        'panel.vcsBase': '与 {base} 比较',
+        'panel.vcsBaseSvn': '与 SVN BASE 比较 · r{revision} · {url}',
+        'panel.vcsBaseGit': '与 Git HEAD 比较 · {revision} · 分支 {branch}',
+        'panel.noVcsChanges': '该工作副本相对基线没有本地改动',
       },
       en: {
         'bar.pending': '{count} files to review',
@@ -849,7 +854,7 @@ window.__ModuleLoader__.load({
 
       // The left column lists the same kind of thing in both modes — files — but
       // measured against a different base: the turn snapshot, or the repository.
-      const vcsStateLive = useLive(vcsMode, sessionId, 'vcs-state', { kind: vcsKind ?? '' }, 4000, nonce)
+      const vcsStateLive = useLive(vcsMode, sessionId, 'vcs-state', { kind: vcsKind ?? '' }, 15000, nonce)
       const snapshotFiles = data?.ok === true ? data.files ?? [] : []
       const files = vcsMode
         ? (vcsStateLive.data?.ok === true ? vcsStateLive.data.files ?? [] : [])
@@ -881,7 +886,7 @@ window.__ModuleLoader__.load({
         sessionId,
         'vcs-diff',
         { kind: vcsKind ?? '', path: selected.path },
-        4000,
+        15000,
         nonce,
       )
       const refsLive = useLive(vcsMode, sessionId, 'refs', { kind: vcsKind ?? '' }, 60000, nonce)

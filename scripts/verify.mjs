@@ -55,6 +55,8 @@ const checks = {
   'svn status warning is an error': host.includes('/svn: (warning|E\\d+)/i'),
   'svn status parsed by pattern': host.includes('(.{1,7})'),
   'vcs listing names its base': host.includes('svnWorkingCopyInfo'),
+  'CRLF-safe line splitting': host.includes('split(/\\r?\\n/)'),
+  'CRLF-safe status regex': host.includes('(.+?)\\r?$'),
 }
 
 for (const [label, present] of Object.entries(checks)) {

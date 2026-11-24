@@ -1053,7 +1053,7 @@ export function apply(ctx, config) {
   const parseUnifiedDiff = (text) => {
     const hunks = []
     let current
-    for (const line of text.split('\n')) {
+    for (const line of text.split(/\r?\n/)) {
       if (line.startsWith('@@')) {
         const match = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line)
         if (match === null) continue
@@ -1108,7 +1108,7 @@ export function apply(ctx, config) {
       const stat = await runCommand(collected.cwd, ['git', 'diff', 'HEAD', '--numstat', '--no-renames'], signal)
       const counts = new Map()
       if (stat.ok) {
-        for (const line of stat.stdout.split('\n')) {
+        for (const line of stat.stdout.split(/\r?\n/)) {
           const parts = line.split('\t')
           if (parts.length < 3) continue
           const added = parts[0] === '-' ? 0 : Number(parts[0])
@@ -1117,7 +1117,7 @@ export function apply(ctx, config) {
         }
       }
       const files = []
-      for (const raw of status.stdout.split('\n')) {
+      for (const raw of status.stdout.split(/\r?\n/)) {
         if (raw.trim() === '') continue
         const code = raw.slice(0, 2).trim()
         const path = raw.slice(3).trim()
@@ -1155,12 +1155,12 @@ export function apply(ctx, config) {
     // dead end into something the reader can check.
     const info = await svnWorkingCopyInfo(collected.cwd, signal)
     const files = []
-    for (const raw of status.stdout.split('\n')) {
+    for (const raw of status.stdout.split(/\r?\n/)) {
       if (raw.trim() === '') continue
       // Seven status columns, then whitespace, then the path. Parsing by pattern
       // keeps absolute paths working (svn prints those when it resolves another
       // working copy's root).
-      const match = /^(.{1,7})\s+(.+)$/.exec(raw)
+      const match = /^(.{1,7})\s+(.+?)\r?$/.exec(raw)
       if (match === null) continue
       const code = match[1].trim()
       const path = match[2].trim().replace(/\\/g, '/')

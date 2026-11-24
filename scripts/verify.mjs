@@ -89,6 +89,8 @@ const clientChecks = {
   'diff branch guards the loading state': client.includes('if (shown === undefined)'),
   'vcs mode names the comparison base': client.includes('panel.vcsBaseSvn') && client.includes('panel.vcsBaseGit'),
   'bulk buttons follow the pending count': client.includes('pendingCount === 0 || vcsMode'),
+  'list shows pending files only': client.includes('const visibleFiles = showHandled ? [...pendingFiles, ...handledFiles] : pendingFiles'),
+  'handled files reachable behind a toggle': client.includes('panel.showHandled') && client.includes('setShowHandled'),
 }
 for (const [label, present] of Object.entries(clientChecks)) {
   console.log(`  ${present ? 'ok  ' : 'MISS'} ${label}`)

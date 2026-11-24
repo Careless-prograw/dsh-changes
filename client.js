@@ -109,6 +109,9 @@ window.__ModuleLoader__.load({
         'panel.vcsBaseSvn': '与 SVN BASE 比较 · r{revision} · {url}',
         'panel.vcsBaseGit': '与 Git HEAD 比较 · {revision} · 分支 {branch}',
         'panel.noVcsChanges': '该工作副本相对基线没有本地改动',
+        'panel.showHandled': '显示已处理的 {count} 个文件',
+        'panel.hideHandled': '隐藏已处理的文件',
+        'panel.pendingOnly': '暂无待审改动',
       },
       en: {
         'bar.pending': '{count} files to review',
@@ -173,6 +176,9 @@ window.__ModuleLoader__.load({
         'panel.vcsBaseSvn': 'Compared with SVN BASE · r{revision} · {url}',
         'panel.vcsBaseGit': 'Compared with Git HEAD · {revision} · branch {branch}',
         'panel.noVcsChanges': 'The working copy has no local changes against the base',
+        'panel.showHandled': 'Show {count} handled file(s)',
+        'panel.hideHandled': 'Hide handled files',
+        'panel.pendingOnly': 'Nothing left to review',
         'panel.rollbackConfirm': 'Force the workspace to {ref}? Every change after that version is discarded and cannot be recovered.',
         'panel.rolledBack': 'Rolled back to {ref}',
         'panel.refEmpty': 'No version points',
@@ -427,6 +433,8 @@ window.__ModuleLoader__.load({
    it separates from its own row tint by lightness instead of matching it. The
    mix resolves per theme: lighter on a dark surface, darker on a light one. */
 .dshc-line[data-kind="add"] .dshc-line__txt,.dshc-line[data-kind="del"] .dshc-line__txt{color:color-mix(in srgb, var(--dshc-marker) 58%, var(--dsw-alias-label-primary,#f2f3f5))}
+.dshc-more{margin:6px 10px 2px;padding:4px 8px;border:1px dashed var(--dsw-alias-border-l2,#303239);border-radius:var(--dsw-radius-sm,6px);background:transparent;color:var(--dsw-alias-label-tertiary,#6f7683);font:inherit;font-size:11px;cursor:pointer;text-align:center}
+.dshc-more:hover{color:var(--dsw-alias-label-secondary,#9aa0ad);border-color:var(--dsw-alias-border-l3,#3a3d45)}
 .dshc-base{flex:none;padding:6px 10px;border-bottom:1px solid var(--dsw-alias-border-l2,#303239);color:var(--dsw-alias-label-tertiary,#6f7683);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .dshc-placeholder{padding:16px 14px;font-size:12px;color:var(--dsw-alias-label-secondary,#9aa0ad);line-height:1.6}
 .dshc-error{padding:8px 12px;font-size:12px;color:var(--dsw-alias-state-error-primary,#f07070);border-bottom:1px solid var(--dsw-alias-border-l2,#303239);display:flex;gap:8px;align-items:center}
@@ -915,7 +923,7 @@ window.__ModuleLoader__.load({
       const current = vcsMode ? undefined : (shown?.ok === true ? shown.cursor : undefined)
       const progress = shown?.ok === true ? shown.progress ?? { decided: 0, total: 0 } : { decided: 0, total: 0 }
 
-      // Fold state per untouched region: keyed by position so expanding one does
+      // Handled files are hidden by default so the list length equals the pending\n      // count the bar and the badge show.\n      const [showHandled, setShowHandled] = useState(false)\n\n      // Fold state per untouched region: keyed by position so expanding one does
       // not disturb the others. Collapsed by default, like an SVN diff.
       const [expanded, setExpanded] = useState({})
       // The file text is needed for every fold — its line count decides how many
@@ -1130,31 +1138,69 @@ window.__ModuleLoader__.load({
         )
       }
 
-      // One row per changed file. A file touched by several rounds appears once
-      // and stays pending until every round touching it is confirmed.
+      // Nothing pending and the handled ones are hidden: say so, and offer the
+      // toggle, instead of leaving a reviewed file's diff on screen.
+      if (pendingFiles.length === 0 && !showHandled) {
+        return h(
+          'div',
+          { className: 'dshc-panel' },
+          h(Styles),
+          head,
+          baseLine === undefined ? null : h('div', { className: 'dshc-base' }, baseLine),
+          h(
+            'div',
+            { className: 'dshc-files' },
+            h('button', {
+              type: 'button',
+              className: 'dshc-more',
+              onClick: () => setShowHandled(true),
+            }, t('panel.showHandled', { count: handledFiles.length })),
+          ),
+          h('div', { className: 'dshc-placeholder' }, t('panel.pendingOnly')),
+        )
+      }
+
+      // The list matches the bar and the badge: what is still pending. Files that
+      // were already kept stay reachable behind a toggle instead of inflating the
+      // list — the count and the rows then always agree.
+      const pendingFiles = files.filter((file) => !file.handled)
+      const handledFiles = files.filter((file) => file.handled === true)
+      const visibleFiles = showHandled ? [...pendingFiles, ...handledFiles] : pendingFiles
+
+      const fileRow = (file) => h(
+        'button',
+        {
+          key: file.path,
+          type: 'button',
+          className: 'dshc-file',
+          'data-selected': file.path === selected.path,
+          'data-handled': file.handled === true,
+          title: file.display,
+          onClick: () => setSelected({ path: file.path, seq: undefined }),
+        },
+        h('span', { className: 'dshc-file__path' }, file.display),
+        h(
+          'span',
+          { className: 'dshc-file__stat' },
+          h('span', { className: 'dshc-plus' }, `+${formatStat(file.added)}`),
+          h('span', { className: 'dshc-minus' }, `−${formatStat(file.deleted)}`),
+        ),
+      )
+
       const fileList = h(
         'div',
         { className: 'dshc-files' },
-        files.map((file) => h(
-          'button',
-          {
-            key: file.path,
+        visibleFiles.map(fileRow),
+        handledFiles.length === 0
+          ? null
+          : h('button', {
+            key: 'toggle-handled',
             type: 'button',
-            className: 'dshc-file',
-            'data-selected': file.path === selected.path,
-            'data-handled': file.handled === true,
-            title: file.display,
-            onClick: () => setSelected({ path: file.path, seq: undefined }),
-          },
-          h('span', { className: 'dshc-file__path' }, file.display),
-          
-          h(
-            'span',
-            { className: 'dshc-file__stat' },
-            h('span', { className: 'dshc-plus' }, `+${formatStat(file.added)}`),
-            h('span', { className: 'dshc-minus' }, `−${formatStat(file.deleted)}`),
-          ),
-        )),
+            className: 'dshc-more',
+            onClick: () => setShowHandled((value) => !value),
+          }, showHandled
+            ? t('panel.hideHandled')
+            : t('panel.showHandled', { count: handledFiles.length })),
       )
 
       let diffHead

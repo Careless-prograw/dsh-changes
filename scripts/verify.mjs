@@ -37,18 +37,20 @@ const checks = {
   'restoreDecisions': host.includes('restoreDecisions()'),
   'flush on dispose': host.includes("'dsh-changes: persisted state'"),
   'batches are never collapsed': !host.includes('knownTurn === turn && knownSeq !== seq'),
-  'collect returns batches': host.includes('const batches = []') && host.includes('queue,'),
-  'bulk action scoped to a batch': host.includes('forEveryFileInBatch'),
+  'files merged across batches': host.includes('const byPath = new Map()') && host.includes('parts: merged.parts'),
+  'bulk action covers every pending file': host.includes('forEveryPendingFile'),
   'decisions keyed by batch': host.includes('`${sessionId}\\u0000${seq}\\u0000${path}`'),
+  'file revert walks newest first': host.includes('.reverse()') && host.includes('revertWholeFile(sessionId, batch, file'),
+  'diff returns labelled parts': host.includes('parts.push(') && host.includes('cursor,'),
 }
 for (const [label, present] of Object.entries(checks)) console.log(`  ${present ? 'ok  ' : 'MISS'} ${label}`)
 
 const client = fs.readFileSync('client.js', 'utf8')
 const clientChecks = {
-  'bar shows the front batch': client.includes('data.front'),
-  'bar names queued batches': client.includes("'bar.queueBadge'"),
-  'panel groups by batch': client.includes("'panel.batch'"),
-  'panel selection carries the batch': client.includes('setSelected({ path: file.path, seq: batch.seq })'),
+  'bar uses merged counts': client.includes('data?.totals') && client.includes("(data?.files ?? [])"),
+  'panel lists one row per file': client.includes("className: 'dshc-file'") && client.includes('file.parts?.length'),
+  'panel labels rounds': client.includes("className: 'dshc-round'"),
+  'markers are rendering only': !host.includes('dshc-round'),
 }
 for (const [label, present] of Object.entries(clientChecks)) console.log(`  ${present ? 'ok  ' : 'MISS'} ${label}`)
 process.exit(problems === 0 ? 0 : 1)

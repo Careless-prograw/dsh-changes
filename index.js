@@ -599,25 +599,73 @@ export function apply(ctx, config) {
     // The queue the bar shows: batches still holding unconfirmed files, oldest
     // first, so the earliest unreviewed change is the one in front.
     const queue = batches.filter((batch) => batch.pending > 0)
-    const front = queue[0]
-    const files = (front?.files ?? []).filter((file) => !file.handled)
+
+    // Merged view: one entry per path across every batch that touched it. The
+    // bar reviews files, not batches — a file stays pending while ANY of its
+    // batches is unconfirmed — and the panel labels each batch's block.
+    const byPath = new Map()
+    for (const batch of batches) {
+      for (const file of batch.files) {
+        let merged = byPath.get(file.path)
+        if (merged === undefined) {
+          merged = {
+            path: file.path,
+            display: file.display,
+            binary: false,
+            oversized: false,
+            parts: [],
+          }
+          byPath.set(file.path, merged)
+        }
+        merged.binary = merged.binary || file.binary === true
+        merged.oversized = merged.oversized || file.oversized === true
+        merged.parts.push({
+          seq: batch.seq,
+          turn: batch.turn,
+          added: file.added,
+          deleted: file.deleted,
+          handled: file.handled === true,
+          restored: batch.restored === true,
+        })
+      }
+    }
+
+    const files = [...byPath.values()].map((merged) => {
+      const latest = merged.parts[merged.parts.length - 1]
+      return {
+        path: merged.path,
+        display: merged.display,
+        binary: merged.binary,
+        oversized: merged.oversized,
+        // Counts describe the newest batch, the closest reading of what the file
+        // holds now; summing parts would count the same lines twice.
+        added: latest?.added ?? 0,
+        deleted: latest?.deleted ?? 0,
+        seq: latest?.seq,
+        turn: latest?.turn,
+        parts: merged.parts,
+        handled: merged.parts.every((part) => part.handled),
+      }
+    }).sort((left, right) => (left.display < right.display ? -1 : left.display > right.display ? 1 : 0))
+
+    const pendingFiles = files.filter((file) => !file.handled)
     return {
       ok: true,
       cwd,
       turn: latestTurn,
       batches,
       queue,
-      front,
+      front: queue[0],
       files,
       restored: restoredAny,
       live: anyLive,
       totals: {
         batches: batches.length,
         pendingBatches: queue.length,
-        files: batches.reduce((sum, batch) => sum + batch.totals.files, 0),
-        pending: queue.reduce((sum, batch) => sum + batch.pending, 0),
-        added: front?.totals.added ?? 0,
-        deleted: front?.totals.deleted ?? 0,
+        files: files.length,
+        pending: pendingFiles.length,
+        added: pendingFiles.reduce((sum, file) => sum + (Number.isFinite(file.added) ? file.added : 0), 0),
+        deleted: pendingFiles.reduce((sum, file) => sum + (Number.isFinite(file.deleted) ? file.deleted : 0), 0),
       },
     }
   }
@@ -730,13 +778,13 @@ export function apply(ctx, config) {
   /**
    * One file's comparison inside one batch.
    * @param seq - the batch (a recorded summary's sequence); omitted means the
-   *   batch currently at the front of the review queue.
+   *   newest batch that touched this path.
    */
   const diffOf = async (sessionId, seq, path, signal) => {
     const collected = await collect(sessionId)
     if (!collected.ok) return { ok: false, code: collected.code, error: collected.error }
     const batch = seq === undefined
-      ? collected.front
+      ? [...collected.batches].reverse().find((candidate) => candidate.files.some((file) => file.path === path))
       : collected.batches.find((candidate) => candidate.seq === seq)
     if (batch === undefined) return { ok: false, code: 'no-batch', error: '该批次已不存在' }
     const file = batch.files.find((candidate) => candidate.path === path)
@@ -1015,36 +1063,91 @@ export function apply(ctx, config) {
     }
   }
 
+  /**
+   * One file's comparison, as every batch that touched it.
+   *
+   * The batches are not rebased into a single diff: each recording compares its
+   * own baseline, so their line numbers live in different coordinate systems and
+   * merging them would invent positions. Each part therefore keeps the recorder's
+   * own numbers and is labelled by the panel instead.
+   */
   const buildDiff = async (sessionId, seq, path, signal) => {
-    const found = await diffOf(sessionId, seq, path, signal)
-    if (!found.ok) return { ok: false, code: found.code, error: found.error }
-    const { batch, file, diff } = found
-    const record = decisionOf(sessionId, batch.seq, file.path)
-    const base = {
-      ok: true,
-      path: file.path,
-      display: file.display,
-      turn: batch.turn,
-      seq: batch.seq,
-      restored: found.restored === true,
-      kind: diff.kind,
-      handled: record !== undefined && record.done === true,
-      states: record?.hunks ?? {},
+    const collected = await collect(sessionId)
+    if (!collected.ok) return { ok: false, code: collected.code, error: collected.error }
+    const merged = collected.files.find((candidate) => candidate.path === path)
+    if (merged === undefined) return { ok: false, code: 'no-file', error: '该文件已不在改动列表中' }
+
+    const wanted = seq === undefined
+      ? merged.parts.map((part) => part.seq)
+      : [seq]
+
+    const parts = []
+    for (const partSeq of wanted) {
+      const found = await diffOf(sessionId, partSeq, path, signal)
+      if (!found.ok) {
+        parts.push({ seq: partSeq, ok: false, code: found.code, error: found.error })
+        continue
+      }
+      const { batch, file, diff } = found
+      const record = decisionOf(sessionId, batch.seq, file.path)
+      const base = {
+        seq: batch.seq,
+        turn: batch.turn,
+        restored: found.restored === true,
+        kind: diff.kind,
+        handled: record !== undefined && record.done === true,
+        states: record?.hunks ?? {},
+        ok: true,
+      }
+      if (diff.kind !== 'text') {
+        parts.push({ ...base, before: diff.before, after: diff.after, hunks: [] })
+        continue
+      }
+      parts.push({
+        ...base,
+        before: diff.before,
+        after: diff.after,
+        coarse: diff.coarse === true,
+        hunks: diff.hunks.map((hunk, index) => ({
+          idx: index,
+          oldStart: hunk.oldStart,
+          oldLines: hunk.oldLines,
+          newStart: hunk.newStart,
+          newLines: hunk.newLines,
+          lines: hunk.lines,
+        })),
+      })
     }
-    if (diff.kind !== 'text') return base
+
+    // The hunk the header acts on: the first undecided one, walking the batches
+    // oldest first so review follows the order the changes happened.
+    let cursor
+    for (const part of parts) {
+      if (part.ok !== true || part.kind !== 'text') {
+        if (part.handled !== true) {
+          cursor = { seq: part.seq, hunkIdx: undefined, kind: part.kind }
+          break
+        }
+        continue
+      }
+      const index = part.hunks.findIndex((hunk) => part.states[hunk.idx] === undefined)
+      if (index >= 0) {
+        cursor = { seq: part.seq, hunkIdx: part.hunks[index].idx, kind: 'text' }
+        break
+      }
+    }
+
+    const totalHunks = parts.reduce((sum, part) => sum + (part.kind === 'text' ? part.hunks.length : 0), 0)
+    const decidedHunks = parts.reduce((sum, part) => sum + (part.kind === 'text' ? Object.keys(part.states ?? {}).length : 0), 0)
     return {
-      ...base,
-      before: diff.before,
-      after: diff.after,
-      coarse: diff.coarse === true,
-      hunks: diff.hunks.map((hunk, index) => ({
-        idx: index,
-        oldStart: hunk.oldStart,
-        oldLines: hunk.oldLines,
-        newStart: hunk.newStart,
-        newLines: hunk.newLines,
-        lines: hunk.lines,
-      })),
+      ok: true,
+      path: merged.path,
+      display: merged.display,
+      handled: merged.handled === true,
+      restored: merged.parts.some((part) => part.restored === true),
+      parts,
+      cursor,
+      progress: { decided: decidedHunks, total: totalHunks },
     }
   }
 
@@ -1119,44 +1222,68 @@ export function apply(ctx, config) {
     return { ok: true }
   }
 
+  /**
+   * Keep a whole file: every batch that touched it is confirmed at once, which
+   * is what the merged file row means.
+   */
   const acceptFile = async (sessionId, seq, path, signal) => {
-    const found = await diffOf(sessionId, seq, path, signal)
-    if (!found.ok) return { ok: false, code: found.code, error: found.error }
-    const record = freshDecision(sessionId, found.batch.seq, found.file.path)
-    record.done = true
-    record.file = 'accept'
-    persistDecision(sessionId, record)
-    return { ok: true }
-  }
-
-  const revertFile = async (sessionId, seq, path, signal) => {
-    const found = await diffOf(sessionId, seq, path, signal)
-    if (!found.ok) return { ok: false, code: found.code, error: found.error }
-    const { collected, batch, file } = found
-    if (collected.cwd === undefined) return { ok: false, code: 'no-cwd', error: '会话没有工作目录' }
-    const result = await revertWholeFile(sessionId, batch, file, collected.cwd, signal)
-    if (!result.ok) return result
-    return { ok: true, path: result.path, hunks: result.hunks }
+    const collected = await collect(sessionId)
+    if (!collected.ok) return { ok: false, code: collected.code, error: collected.error }
+    const merged = collected.files.find((candidate) => candidate.path === path)
+    if (merged === undefined) return { ok: false, code: 'no-file', error: '该文件已不在改动列表中' }
+    let marked = 0
+    for (const part of merged.parts) {
+      const record = freshDecision(sessionId, part.seq, merged.path)
+      record.done = true
+      record.file = 'accept'
+      persistDecision(sessionId, record)
+      marked += 1
+    }
+    return { ok: true, parts: marked }
   }
 
   /**
-   * Apply one operation to every file of one batch.
+   * Undo a whole file: walk its batches newest first.
    *
-   * A bulk action is scoped to a batch, never to "all pending files anywhere":
-   * the bar sits beside one batch's count, and clearing an earlier batch must not
-   * silently settle later ones the user has not seen.
+   * Only that order can work — a newer batch's hunks were recorded against the
+   * content the older batch produced, so unwinding from the oldest would fail
+   * immediately with a false conflict.
    */
-  const forEveryFileInBatch = async (sessionId, seq, operation, signal, skipUnrevertible = false) => {
+  const revertFile = async (sessionId, seq, path, signal) => {
     const collected = await collect(sessionId)
     if (!collected.ok) return { ok: false, code: collected.code, error: collected.error }
-    const batch = seq === undefined
-      ? collected.front
-      : collected.batches.find((candidate) => candidate.seq === seq)
-    if (batch === undefined) return { ok: true, handled: 0, failures: [], skipped: [], total: 0, batchSeq: undefined }
-    if (collected.cwd === undefined && batch.files.length > 0) {
+    const merged = collected.files.find((candidate) => candidate.path === path)
+    if (merged === undefined) return { ok: false, code: 'no-file', error: '该文件已不在改动列表中' }
+    if (collected.cwd === undefined) return { ok: false, code: 'no-cwd', error: '会话没有工作目录' }
+
+    const parts = [...merged.parts].filter((part) => !part.handled).reverse()
+    let reverted = 0
+    for (const part of parts) {
+      const batch = collected.batches.find((candidate) => candidate.seq === part.seq)
+      const file = batch?.files.find((candidate) => candidate.path === merged.path)
+      if (batch === undefined || file === undefined) continue
+      const result = await revertWholeFile(sessionId, batch, file, collected.cwd, signal)
+      if (!result.ok) {
+        return { ...result, reverted, of: parts.length }
+      }
+      reverted += 1
+    }
+    return { ok: true, path: merged.path, reverted, of: parts.length }
+  }
+
+  /**
+   * Apply one file-level operation to every pending file.
+   *
+   * The bar reviews a merged file list, so its bulk actions cover exactly the
+   * files it shows — each of them spanning every batch that touched it.
+   */
+  const forEveryPendingFile = async (sessionId, operation, signal, skipUnrevertible = false) => {
+    const collected = await collect(sessionId)
+    if (!collected.ok) return { ok: false, code: collected.code, error: collected.error }
+    const targets = collected.files.filter((file) => !file.handled)
+    if (collected.cwd === undefined && targets.length > 0) {
       return { ok: false, code: 'no-cwd', error: '会话没有工作目录' }
     }
-    const targets = batch.files.filter((file) => !file.handled)
     const failures = []
     const skipped = []
     let handled = 0
@@ -1168,11 +1295,11 @@ export function apply(ctx, config) {
         skipped.push(file.display)
         continue
       }
-      const result = await operation(batch, file, collected.cwd, signal)
+      const result = await operation(file, collected.cwd, signal)
       if (result.ok) handled += 1
       else failures.push(`${file.display}：${result.error ?? result.code}`)
     }
-    return { ok: failures.length === 0, handled, failures, skipped, total: targets.length, batchSeq: batch.seq }
+    return { ok: failures.length === 0, handled, failures, skipped, total: targets.length }
   }
 
   // ------------------------------------------------------------------ transport
@@ -1267,17 +1394,15 @@ export function apply(ctx, config) {
         case 'revertFile':
           return json(await revertFile(sessionId, seq, path, signal))
         case 'acceptAll':
-          return json(await forEveryFileInBatch(
+          return json(await forEveryPendingFile(
             sessionId,
-            seq,
-            async (batch, file) => acceptFile(sessionId, batch.seq, file.path, signal),
+            async (file) => acceptFile(sessionId, undefined, file.path, signal),
             signal,
           ))
         case 'rejectAll':
-          return json(await forEveryFileInBatch(
+          return json(await forEveryPendingFile(
             sessionId,
-            seq,
-            async (batch, file, cwd) => revertWholeFile(sessionId, batch, file, cwd, signal),
+            async (file, cwd) => revertFile(sessionId, undefined, file.path, signal),
             signal,
             true,
           ))

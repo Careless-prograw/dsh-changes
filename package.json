@@ -1,6 +1,6 @@
 {
   "name": "dsh-changes",
-  "version": "1.4.4",
+  "version": "1.4.5",
   "type": "module",
   "description": "Review each turn's file changes hunk by hunk, accept or revert them, and roll the workspace back to a Git commit or an SVN revision — a review bar above the composer plus a Changes page in the right sidebar.",
   "license": "MIT",

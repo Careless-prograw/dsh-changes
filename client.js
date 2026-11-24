@@ -394,14 +394,14 @@ window.__ModuleLoader__.load({
 .dshc-hunk[data-active="true"]{box-shadow:inset 3px 0 0 var(--dsw-alias-state-business-primary,#6c8cff)}
 .dshc-hunk[data-state="accept"]{opacity:.5}
 .dshc-hunk[data-state="reject"]{opacity:.5}
-.dshc-hunk__head{display:flex;align-items:center;gap:8px;padding:3px 10px;background:var(--dsw-alias-fill-l1,rgba(127,127,127,.1));color:var(--dsw-alias-label-secondary,#9aa0ad);font-size:11px}
+.dshc-hunk__head{display:flex;align-items:center;gap:8px;padding:3px 10px;min-width:100%;width:max-content;box-sizing:border-box;background:var(--dsw-alias-fill-l1,rgba(127,127,127,.1));color:var(--dsw-alias-label-secondary,#9aa0ad);font-size:11px}
 .dshc-hunk__range{font-family:var(--dsw-font-mono,ui-monospace,Menlo,Consolas,monospace)}
-.dshc-hunk__round{margin-left:auto;font-size:10.5px;color:var(--dsw-alias-label-tertiary,#6f7683);border:1px solid var(--dsw-alias-border-l2,#303239);border-radius:var(--dsw-radius-xs,4px);padding:0 5px;white-space:nowrap}
+.dshc-hunk__round{flex:none;font-size:10.5px;color:var(--dsw-alias-label-tertiary,#6f7683);border:1px solid var(--dsw-alias-border-l2,#303239);border-radius:var(--dsw-radius-xs,4px);padding:0 5px;white-space:nowrap}
 /* Line rendering follows the host's own diff: the row background marks the
    change, the gutter and the sign carry its colour, and the CODE TEXT keeps the
    primary label colour so it stays readable. */
-.dshc-line{display:flex;white-space:pre;color:var(--dsw-alias-label-primary,#f2f3f5)}
-.dshc-line__no{width:34px;flex:none;text-align:right;padding-right:6px;color:var(--dsw-alias-label-tertiary,#6f7683);user-select:none}
+.dshc-line{display:flex;white-space:pre;min-width:100%;width:max-content;box-sizing:border-box;color:var(--dsw-alias-label-primary,#f2f3f5)}
+.dshc-line__no{width:46px;flex:none;text-align:right;padding-right:8px;color:var(--dsw-alias-label-tertiary,#6f7683);user-select:none}
 .dshc-line__sign{width:14px;flex:none;text-align:center;user-select:none;color:var(--dsw-alias-label-tertiary,#6f7683)}
 .dshc-line__txt{flex:1;padding-right:10px;color:inherit}
 .dshc-line[data-kind="ctx"] .dshc-line__txt{color:var(--dsw-alias-label-secondary,#aab0bd)}
@@ -412,7 +412,7 @@ window.__ModuleLoader__.load({
 .dshc-placeholder{padding:16px 14px;font-size:12px;color:var(--dsw-alias-label-secondary,#9aa0ad);line-height:1.6}
 .dshc-error{padding:8px 12px;font-size:12px;color:var(--dsw-alias-state-error-primary,#f07070);border-bottom:1px solid var(--dsw-alias-border-l2,#303239);display:flex;gap:8px;align-items:center}
 .dshc-chip{flex:none;font-family:var(--dsw-font-mono,ui-monospace,Menlo,Consolas,monospace);font-size:10.5px;color:var(--dsw-alias-label-secondary,#9aa0ad);border:1px solid var(--dsw-alias-border-l2,#303239);border-radius:var(--dsw-radius-xs,4px);padding:0 4px}
-.dshc-fold{display:flex;align-items:center;gap:8px;width:100%;padding:3px 10px;border:0;border-top:1px solid var(--dsw-alias-border-l2,#303239);border-bottom:1px solid var(--dsw-alias-border-l2,#303239);background:var(--dsw-alias-fill-l2,rgba(127,127,127,.08));color:var(--dsw-alias-label-tertiary,#6f7683);font:inherit;font-size:10.5px;cursor:pointer;text-align:left}
+.dshc-fold{display:flex;align-items:center;gap:8px;min-width:100%;width:max-content;box-sizing:border-box;padding:3px 10px;border:0;border-top:1px solid var(--dsw-alias-border-l2,#303239);border-bottom:1px solid var(--dsw-alias-border-l2,#303239);background:var(--dsw-alias-fill-l2,rgba(127,127,127,.08));color:var(--dsw-alias-label-tertiary,#6f7683);font:inherit;font-size:10.5px;cursor:pointer;text-align:left}
 .dshc-fold:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.16));color:var(--dsw-alias-label-secondary,#9aa0ad)}
 .dshc-fold__sign{font-family:var(--dsw-font-mono,ui-monospace,Menlo,Consolas,monospace)}
 
@@ -738,6 +738,13 @@ window.__ModuleLoader__.load({
       )
     }
 
+    /**
+     * One row per diff line, with a single line number.
+     *
+     * A unified diff needs one column, not two: an added line shows its number on
+     * the new side, a removed line on the old side, and the `+`/`-` sign says
+     * which. Context lines show the new-side number.
+     */
     function hunkRows(hunk) {
       const rows = []
       let oldNo = hunk.oldStart
@@ -745,10 +752,11 @@ window.__ModuleLoader__.load({
       for (const line of hunk.lines ?? []) {
         const prefix = line.slice(0, 1)
         const text = line.slice(1)
-        if (prefix === '+') rows.push({ kind: 'add', text, newNo: newNo++ })
-        else if (prefix === '-') rows.push({ kind: 'del', text, oldNo: oldNo++ })
+        if (prefix === '+') rows.push({ kind: 'add', text, sign: '+', no: newNo++ })
+        else if (prefix === '-') rows.push({ kind: 'del', text, sign: '-', no: oldNo++ })
         else {
-          rows.push({ kind: 'ctx', text, oldNo: oldNo++, newNo: newNo++ })
+          oldNo += 1
+          rows.push({ kind: 'ctx', text, sign: ' ', no: newNo++ })
         }
       }
       return rows
@@ -788,12 +796,11 @@ window.__ModuleLoader__.load({
         rows.map((row, index) => h(
           'div',
           { key: index, className: 'dshc-line', 'data-kind': row.kind },
-          h('span', { className: 'dshc-line__no' }, row.oldNo ?? ''),
-          h('span', { className: 'dshc-line__no' }, row.newNo ?? ''),
+          h('span', { className: 'dshc-line__no' }, String(row.no)),
           // The sign carries the add/remove colour; the code text stays at the
           // primary label colour so it remains readable, which is how the host's
           // own diff renders lines.
-          h('span', { className: 'dshc-line__sign' }, row.kind === 'add' ? '+' : row.kind === 'del' ? '-' : ' '),
+          h('span', { className: 'dshc-line__sign' }, row.sign),
           h('span', { className: 'dshc-line__txt' }, row.text),
         )),
       )
@@ -1186,6 +1193,9 @@ window.__ModuleLoader__.load({
         // unchanged text; the row states how many lines it hides.
         const rows = []
         let previousEnd = 1
+        // The change ordinal last labelled, so consecutive hunks of the same
+        // change share one tag instead of repeating it.
+        let lastTagged
         hunks.forEach((hunk, index) => {
           const gap = hunk.newStart - previousEnd
           if (index > 0 && gap > 0) {
@@ -1206,7 +1216,6 @@ window.__ModuleLoader__.load({
               const to = hunk.newStart - 1
               for (let line = from; line <= to; line += 1) {
                 rows.push(h('div', { key: `gap-${index}-${line}`, className: 'dshc-line', 'data-kind': 'ctx' },
-                  h('span', { className: 'dshc-line__no' }, ''),
                   h('span', { className: 'dshc-line__no' }, String(line)),
                   h('span', { className: 'dshc-line__sign' }, ' '),
                   h('span', { className: 'dshc-line__txt' }, fileLines[line - 1] ?? ''),
@@ -1214,16 +1223,20 @@ window.__ModuleLoader__.load({
               }
             }
           }
-          // Every hunk states which change it belongs to. The tag rides in the
-          // header line, so it never overlaps on scroll and never becomes part of
-          // a code line.
+          // A tag names the change a hunk belongs to, so it is drawn only when
+          // that changes: repeating "第 6 次改动" above every hunk of the same
+          // change just adds headers. The tag rides in the header line, so it
+          // never overlaps on scroll and never becomes part of a code line.
           const rounds = diff.rounds ?? 1
+          const ordinal = hunk.round ?? rounds
+          const showTag = rounds > 1 && ordinal !== lastTagged
+          if (showTag) lastTagged = ordinal
           rows.push(h(HunkView, {
             key: `hunk-${hunk.idx}`,
             hunk,
             state: diff.states?.[hunk.idx],
             active: current !== undefined && current.hunkIdx === hunk.idx,
-            round: rounds > 1 ? (hunk.round ?? rounds) : undefined,
+            round: showTag ? ordinal : undefined,
             originTurn: hunk.originTurn,
             coarse: diff.coarse === true,
           }))

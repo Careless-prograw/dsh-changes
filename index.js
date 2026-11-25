@@ -1804,7 +1804,25 @@ export function apply(ctx, config) {
 
   ctx.effect(() => {
     void nativeCard.apply().catch((error) => log(`native card toggle failed: ${messageOf(error)}`))
+    // The flag lives in memory only (that is what keeps uninstall residue-free),
+    // so the composition can overwrite it later — most visibly on a fresh start,
+    // where this activation races the loader composing that row. Re-assert when
+    // the live entry disagrees with the desired state, with a cap so a host that
+    // refuses the change is not fought forever.
+    let attempts = 0
+    const timer = setInterval(() => {
+      if (attempts >= 20) return
+      const status = nativeCard.status()
+      if (status.available !== true) return
+      const desired = readHideNative()
+      const actual = status.entryDisabled === true
+      if (desired === actual) return
+      attempts += 1
+      void nativeCard.apply().catch((error) => log(`native card re-assert failed: ${messageOf(error)}`))
+    }, 1500)
+    if (typeof timer.unref === 'function') timer.unref()
     return () => {
+      clearInterval(timer)
       void nativeCard.dispose().catch(() => {})
     }
   }, 'dsh-changes: native changes card')

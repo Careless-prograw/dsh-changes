@@ -58,6 +58,7 @@ const checks = {
   'CRLF-safe line splitting': host.includes('split(/\\r?\\n/)'),
   'CRLF-safe status regex': host.includes('(.+?)\\r?$'),
   'a handled file settles every hunk': host.includes('const settled = record?.done === true'),
+  'native card toggle self-heals': host.includes('native card re-assert failed') && host.includes('const actual = status.entryDisabled === true'),
 }
 
 for (const [label, present] of Object.entries(checks)) {

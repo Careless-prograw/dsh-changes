@@ -112,6 +112,13 @@ window.__ModuleLoader__.load({
         'panel.showHandled': '显示已处理的 {count} 个文件',
         'panel.hideHandled': '隐藏已处理的文件',
         'panel.pendingOnly': '暂无待审改动',
+        'panel.checkpointLabel': '检查点',
+        'panel.checkpointHint': '把待审文件退回到某个步骤结束时的状态',
+        'panel.checkpointPick': '回退到…',
+        'panel.checkpointItem': '第 {turn} 轮 · {files} 个文件',
+        'panel.checkpointGo': '回退到此步骤',
+        'panel.checkpointConfirm': '把待审文件退回到第 {turn} 轮结束时的状态？其后各步的改动会被撤销。',
+        'panel.checkpointDone': '已回退 {count} 个文件',
       },
       en: {
         'bar.pending': '{count} files to review',
@@ -179,6 +186,13 @@ window.__ModuleLoader__.load({
         'panel.showHandled': 'Show {count} handled file(s)',
         'panel.hideHandled': 'Hide handled files',
         'panel.pendingOnly': 'Nothing left to review',
+        'panel.checkpointLabel': 'Checkpoint',
+        'panel.checkpointHint': 'Step the pending files back to the state after an earlier step',
+        'panel.checkpointPick': 'Roll back to…',
+        'panel.checkpointItem': 'turn {turn} · {files} files',
+        'panel.checkpointGo': 'Roll back here',
+        'panel.checkpointConfirm': 'Step the pending files back to the end of turn {turn}? Later steps are undone.',
+        'panel.checkpointDone': 'Rolled back {count} file(s)',
         'panel.rollbackConfirm': 'Force the workspace to {ref}? Every change after that version is discarded and cannot be recovered.',
         'panel.rolledBack': 'Rolled back to {ref}',
         'panel.refEmpty': 'No version points',
@@ -849,6 +863,7 @@ window.__ModuleLoader__.load({
       // rendering (its dependency array is evaluated on every render), so it must
       // not be declared after that effect.
       const [showHandled, setShowHandled] = useState(false)
+      const [checkpointSeq, setCheckpointSeq] = useState('')
       const focus = useStore(focusStore)
       useStore(localeStore)
 
@@ -874,6 +889,10 @@ window.__ModuleLoader__.load({
       const pendingFiles = files.filter((file) => !file.handled)
       const handledFiles = files.filter((file) => file.handled === true)
       const vcsInfoLive = useLive(vcsMode, sessionId, 'vcs-info', { kind: vcsKind ?? '' }, 60000, nonce)
+      // The steps this session's work arrived in: a plan lands in stages, so a
+      // wrong later stage has to be unwound back to an earlier one.
+      const checkpointsLive = useLive(true, sessionId, 'checkpoints', null, 5000, nonce)
+      const checkpoints = checkpointsLive.data?.ok === true ? checkpointsLive.data.checkpoints ?? [] : []
 
       useEffect(() => {
         // Only rows that are actually on screen may be selected; when nothing is
@@ -1092,6 +1111,45 @@ window.__ModuleLoader__.load({
             )),
           )
           : null,
+        // Stepping back to an earlier stage of the same work: the later stages'
+        // hunks are unwound so the files return to that earlier state.
+        checkpoints.length <= 1
+          ? null
+          : h(
+            'select',
+            {
+              className: 'dshc-select',
+              value: checkpointSeq,
+              'aria-label': t('panel.checkpointLabel'),
+              title: t('panel.checkpointHint'),
+              onChange: (event) => setCheckpointSeq(event.target.value),
+            },
+            h('option', { value: '' }, t('panel.checkpointPick')),
+            [...checkpoints].reverse().map((item) => h(
+              'option',
+              { key: item.seq, value: String(item.seq) },
+              t('panel.checkpointItem', { turn: item.turn ?? '?', files: item.files }),
+            )),
+          ),
+        checkpoints.length <= 1
+          ? null
+          : h('button', {
+            type: 'button',
+            className: 'dshc-btn',
+            disabled: busy !== '' || checkpointSeq === '',
+            onClick: async () => {
+              const chosen = checkpoints.find((item) => String(item.seq) === checkpointSeq)
+              if (chosen === undefined) return
+              if (!window.confirm(t('panel.checkpointConfirm', { turn: chosen.turn ?? '?' }))) return
+              const result = await run({ op: 'restore', seq: chosen.seq })
+              if (result?.ok === true) {
+                flash(t('panel.checkpointDone', { count: result.restored ?? 0 }), false)
+                setSelected({ path: '', seq: undefined })
+              } else {
+                flash(result?.failures?.[0] ?? result?.error ?? t('panel.failed'), true)
+              }
+            },
+          }, t('panel.checkpointGo')),
         h('button', {
           type: 'button',
           className: 'dshc-btn dshc-btn--danger',

@@ -62,6 +62,9 @@ const checks = {
   'cache read before services': host.includes('const cachedPrefs = loadPrefs()'),
   'no polling timer': !host.includes('native card re-assert failed'),
   're-applied on boot event': host.includes('app-boot/config-reload'),
+  'checkpoints listed': host.includes('const buildCheckpoints = async'),
+  'checkpoint unwind exists': host.includes('const restoreToChange = async'),
+  'checkpoint action routed': host.includes("'restore'"),
 }
 
 for (const [label, present] of Object.entries(checks)) {

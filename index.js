@@ -914,6 +914,88 @@ export function apply(ctx, config) {
     return { ok: true, path: file.path, hunks: diff.hunks.length }
   }
 
+  /**
+   * Step a file back to how it looked after one earlier change.
+   *
+   * A plan lands in steps; when a later step turns out wrong, undoing its hunks
+   * is not enough — the file has to return to the state the earlier step left it
+   * in, and a later step may have rewritten the very lines the earlier one
+   * produced. Every recording holds "baseline → that moment", so unwinding them
+   * one at a time reaches any earlier moment.
+   *
+   * Each unwind matches the side it expects to find, so a recording that does not
+   * chain simply refuses instead of writing a guess.
+   */
+  const restoreToChange = async (sessionId, merged, targetSeq, cwd, signal) => {
+    const newer = [...merged.parts].filter((part) => part.seq > targetSeq)
+    if (newer.length === 0) return { ok: true, path: merged.path, undone: 0, unchanged: true }
+
+    const absolute = absoluteOf(cwd, { path: merged.path })
+    let split
+    try {
+      split = splitLines(await readTextAt(absolute, signal))
+    } catch (error) {
+      return { ok: false, code: 'read-failed', error: `读取失败：${messageOf(error)}` }
+    }
+    let lines = split.lines
+
+    // Newest first: the working copy matches the newest recording, and each
+    // unwind hands back exactly what the next older one expects.
+    for (const part of [...newer].sort((left, right) => right.seq - left.seq)) {
+      const found = await diffOf(sessionId, part.seq, merged.path, signal)
+      if (!found.ok) return { ok: false, code: 'no-diff', error: `第 ${part.turn ?? '?'} 轮差异不可用` }
+      const diff = found.diff
+      if (diff.kind !== 'text') {
+        return { ok: false, code: 'unsupported', error: '二进制或超大文件无法按步骤回退' }
+      }
+      for (let index = diff.hunks.length - 1; index >= 0; index -= 1) {
+        const result = reverseOne(lines, diff.hunks[index], 0)
+        if (!result.ok) {
+          return {
+            ok: false,
+            code: 'conflict',
+            error: `回退到该检查点失败：第 ${part.turn ?? '?'} 轮的改动第 ${index + 1} 块与当前内容不一致`,
+          }
+        }
+        lines = result.lines
+      }
+    }
+
+    try {
+      await writeTextAt(absolute, renderText(lines, split.trailingNewline), signal, sessionId)
+    } catch (error) {
+      return { ok: false, code: 'write-failed', error: `写入失败：${messageOf(error)}` }
+    }
+
+    // The file now matches the target change; everything after it was undone, so
+    // the review unit is settled rather than left half-decided.
+    const record = freshDecision(sessionId, merged.parts[merged.parts.length - 1].seq, merged.path)
+    record.done = true
+    record.file = 'restore'
+    persistDecision(sessionId, record)
+    return { ok: true, path: merged.path, undone: newer.length, unchanged: false }
+  }
+
+  /** Restore one file, or every pending file, to the state after `targetSeq`. */
+  const restoreAllToChange = async (sessionId, targetSeq, path, signal) => {
+    const collected = await collect(sessionId)
+    if (!collected.ok) return { ok: false, code: collected.code, error: collected.error }
+    if (collected.cwd === undefined) return { ok: false, code: 'no-cwd', error: '会话没有工作目录' }
+    const targets = path === undefined || path === ''
+      ? collected.files.filter((file) => !file.handled)
+      : collected.files.filter((file) => file.path === path)
+    if (targets.length === 0) return { ok: false, code: 'no-file', error: '没有可回退的文件' }
+
+    const done = []
+    const failures = []
+    for (const merged of targets) {
+      const result = await restoreToChange(sessionId, merged, targetSeq, collected.cwd, signal)
+      if (result.ok) done.push(result.path)
+      else failures.push(`${merged.display}：${result.error ?? result.code}`)
+    }
+    return { ok: failures.length === 0, restored: done.length, failures, total: targets.length }
+  }
+
   // ------------------------------------------------------------------------ vcs
 
   const runCommand = async (cwd, argv, signal) => {
@@ -1367,6 +1449,26 @@ export function apply(ctx, config) {
     return { ok: true, kind, ref, output: run.stdout.trim() }
   }
 
+  /**
+   * The steps this session's work arrived in, newest last.
+   *
+   * Each entry is one recorded change, which is the granularity a plan lands in:
+   * rolling back to it means "the state after that step".
+   */
+  const buildCheckpoints = async (sessionId) => {
+    const collected = await collect(sessionId)
+    if (!collected.ok) return { ok: false, code: collected.code, error: collected.error }
+    return {
+      ok: true,
+      checkpoints: collected.batches.map((batch) => ({
+        seq: batch.seq,
+        turn: batch.turn,
+        files: batch.files.length,
+        pending: batch.pending,
+      })),
+    }
+  }
+
   // ------------------------------------------------------------------- payloads
 
   /**
@@ -1746,6 +1848,9 @@ export function apply(ctx, config) {
           const kind = url.searchParams.get('kind') ?? undefined
           return json(await listRefs(sessionId, kind, signal))
         }
+        case `${NS}/checkpoints`: {
+          return json(await buildCheckpoints(sessionId))
+        }
         case `${NS}/vcs-info`: {
           const kind = url.searchParams.get('kind') ?? undefined
           return json(await vcsRepoInfo(sessionId, kind, signal))
@@ -1829,6 +1934,8 @@ export function apply(ctx, config) {
             signal,
             true,
           ))
+        case 'restore':
+          return json(await restoreAllToChange(sessionId, Number(body.seq), path, signal))
         case 'rollback':
           return json(await rollback(sessionId, body.kind === 'svn' ? 'svn' : 'git', body.ref, signal))
         default:

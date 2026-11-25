@@ -600,7 +600,21 @@ export function apply(ctx, config) {
       if (recorder === undefined) {
         return { ok: false, code: 'no-recorder', error: '变更记录器不可用（workspaceChanges 未挂载）' }
       }
-      return { ok: true, cwd: undefined, turn: 0, batches: [], files: [] }
+      // A Session with nothing recorded yet. The shape has to match the populated
+      // one exactly: callers read `totals`/`queue` without re-checking, and a
+      // brand-new Session is the first thing anyone opens.
+      return {
+        ok: true,
+        cwd: undefined,
+        turn: 0,
+        batches: [],
+        queue: [],
+        front: undefined,
+        files: [],
+        restored: false,
+        live: false,
+        totals: { batches: 0, pendingBatches: 0, files: 0, pending: 0, added: 0, deleted: 0 },
+      }
     }
 
     const batches = []
@@ -1501,12 +1515,12 @@ export function apply(ctx, config) {
       turn: collected.turn,
       vcs: detected,
       restored: collected.restored === true,
-      batches: collected.batches,
-      queue: collected.queue,
+      batches: collected.batches ?? [],
+      queue: collected.queue ?? [],
       front: collected.front ?? null,
-      files: collected.files,
-      pending: collected.totals.pending,
-      totals: collected.totals,
+      files: collected.files ?? [],
+      pending: collected.totals?.pending ?? 0,
+      totals: collected.totals ?? { batches: 0, pendingBatches: 0, files: 0, pending: 0, added: 0, deleted: 0 },
       nativeCard: nativeCard.status(),
     }
   }

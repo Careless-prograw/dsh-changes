@@ -65,6 +65,8 @@ const checks = {
   'checkpoints listed': host.includes('const buildCheckpoints = async'),
   'checkpoint unwind exists': host.includes('const restoreToChange = async'),
   'checkpoint action routed': host.includes("'restore'"),
+  'empty session returns the full shape': host.includes('pendingBatches: 0, files: 0, pending: 0, added: 0, deleted: 0 }'),
+  'state reads totals defensively': host.includes('collected.totals?.pending ?? 0'),
 }
 
 for (const [label, present] of Object.entries(checks)) {

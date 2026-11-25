@@ -1,5 +1,14 @@
 # 更新记录
 
+## 1.8.1
+
+修**新开一个会话就报错**：待审条直接显示 `Cannot read properties of undefined (reading 'pending')`。
+
+- 原因：`collect()` 在"这个会话还没有任何改动记录"时提前返回，但返回的对象**少了 `totals`、`queue` 等字段**。`buildState` 认为 `ok: true` 便直接读 `collected.totals.pending`，于是空会话一打开就是 500。
+- 新会话恰恰是每个人打开的第一屏，所以这个缺口影响面最大：之前所有测试都在有改动的会话里做，从未覆盖"零记录"这条路径。
+- 修法：该分支补齐为与正常返回**完全相同的结构**；`buildState` 读取时也加了兜底（`collected.totals?.pending ?? 0`）。
+- 新增 `scripts/test-empty-session.mjs`：用一个不存在的 sessionId 依次请求 `state` / `checkpoints` / `refs` / `vcs-info` / `diff`，断言全部返回 HTTP 200 且字段齐全。
+
 ## 1.8.0
 
 新增**检查点回退**：把待审文件退回到某个步骤结束时的状态。

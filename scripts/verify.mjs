@@ -58,7 +58,10 @@ const checks = {
   'CRLF-safe line splitting': host.includes('split(/\\r?\\n/)'),
   'CRLF-safe status regex': host.includes('(.+?)\\r?$'),
   'a handled file settles every hunk': host.includes('const settled = record?.done === true'),
-  'native card toggle self-heals': host.includes('native card re-assert failed') && host.includes('const actual = status.entryDisabled === true'),
+  'switch value is cached': host.includes('prefs.json') && host.includes('loadPrefs'),
+  'cache read before services': host.includes('const cachedPrefs = loadPrefs()'),
+  'no polling timer': !host.includes('native card re-assert failed'),
+  're-applied on boot event': host.includes('app-boot/config-reload'),
 }
 
 for (const [label, present] of Object.entries(checks)) {

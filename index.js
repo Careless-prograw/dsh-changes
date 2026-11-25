@@ -222,16 +222,69 @@ function createNativeCardController(ctx, desiredHide) {
 
 export function apply(ctx, config) {
   /**
-   * The live value of the switch. A volatile field arrives as a cell
-   * (`.get()`), which is what makes the Plugins page form possible and what
-   * lets an edit apply without restarting this plugin.
+   * The switch, cached on disk.
+   *
+   * The value has to survive a Host restart and be readable before any service is
+   * composed, so it lives in this plugin's own cache beside its state rather than
+   * only in the settings document. Reading it first also means the card can be
+   * hidden at activation instead of after some later reconciliation.
    */
-  const readHideNative = () => {
+  const prefsPath = () => {
+    const explicit = (process.env.DSH_HOME ?? '').trim()
+    const home = explicit === '' ? join(homedir(), '.dsh') : explicit
+    return join(home, 'dsh-changes', 'prefs.json')
+  }
+
+  const loadPrefs = () => {
+    try {
+      const parsed = JSON.parse(readFileSync(prefsPath(), 'utf8'))
+      if (parsed === null || typeof parsed !== 'object') return {}
+      const value = parsed.hideNativeChangesCard
+      // Only a boolean counts as a stored value; anything else is "no value".
+      return typeof value === 'boolean' ? { hideNativeChangesCard: value } : {}
+    } catch {
+      return {}
+    }
+  }
+
+  const cachedPrefs = loadPrefs()
+
+  const savePrefs = () => {
+    try {
+      const dir = dirname(prefsPath())
+      mkdirSync(dir, { recursive: true })
+      const tmp = `${prefsPath()}.tmp`
+      writeFileSync(tmp, JSON.stringify(cachedPrefs, null, 2), 'utf8')
+      renameSync(tmp, prefsPath())
+    } catch (error) {
+      log(`prefs write failed: ${messageOf(error)}`)
+    }
+  }
+
+  /** What the settings document currently says, when it says anything at all. */
+  const configHideNative = () => {
     const field = config?.hideNativeChangesCard
     if (field !== null && typeof field === 'object' && typeof field.get === 'function') {
-      return field.get() !== false
+      const value = field.get()
+      return typeof value === 'boolean' ? value : undefined
     }
-    return field !== false
+    return typeof field === 'boolean' ? field : undefined
+  }
+
+  /**
+   * The effective switch: an explicit settings value wins and refreshes the
+   * cache; otherwise the cached value; otherwise the card is shown.
+   */
+  const readHideNative = () => {
+    const fromConfig = configHideNative()
+    if (fromConfig !== undefined) {
+      if (cachedPrefs.hideNativeChangesCard !== fromConfig) {
+        cachedPrefs.hideNativeChangesCard = fromConfig
+        savePrefs()
+      }
+      return fromConfig
+    }
+    return cachedPrefs.hideNativeChangesCard === true
   }
 
   /** sessionId -> Map<eventSeq, turn> of every `workspace/changes` event seen. */
@@ -1803,29 +1856,23 @@ export function apply(ctx, config) {
   }, 'dsh-changes: persisted state')
 
   ctx.effect(() => {
+    // Applied once at activation from the cached value, so a restart cannot leave
+    // the native card showing. Re-asserted by events rather than a timer: the
+    // loader finishes composing the deliverables row after this activation, and
+    // `app-boot/config-reload` is exactly the signal that it settled.
     void nativeCard.apply().catch((error) => log(`native card toggle failed: ${messageOf(error)}`))
-    // The flag lives in memory only (that is what keeps uninstall residue-free),
-    // so the composition can overwrite it later — most visibly on a fresh start,
-    // where this activation races the loader composing that row. Re-assert when
-    // the live entry disagrees with the desired state, with a cap so a host that
-    // refuses the change is not fought forever.
-    let attempts = 0
-    const timer = setInterval(() => {
-      if (attempts >= 20) return
-      const status = nativeCard.status()
-      if (status.available !== true) return
-      const desired = readHideNative()
-      const actual = status.entryDisabled === true
-      if (desired === actual) return
-      attempts += 1
-      void nativeCard.apply().catch((error) => log(`native card re-assert failed: ${messageOf(error)}`))
-    }, 1500)
-    if (typeof timer.unref === 'function') timer.unref()
     return () => {
-      clearInterval(timer)
       void nativeCard.dispose().catch(() => {})
     }
   }, 'dsh-changes: native changes card')
+
+  ctx.on('app-boot/config-reload', () => {
+    void nativeCard.apply().catch((error) => log(`native card re-apply failed: ${messageOf(error)}`))
+  })
+
+  ctx.on('plugin-manager/changed', () => {
+    void nativeCard.apply().catch((error) => log(`native card re-apply failed: ${messageOf(error)}`))
+  })
 
   // A volatile edit commits into the running fiber without a restart, so the
   // toggle follows the document instead of waiting for a reload.

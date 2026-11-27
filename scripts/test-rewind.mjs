@@ -301,4 +301,11 @@ const keptLater = await state(KEPT)
 assert.equal(keptLater.totals.files, 4, 'rounds after the rewind are recorded again')
 assert.equal(keptLater.totals.pending, 3)
 
+// Rewinding a second time must tighten the same watermark, not lose track of it.
+const againRewind = await act({ op: 'rewind', sessionId: KEPT, seq: 22 })
+assert.equal(againRewind.body.ok, true, JSON.stringify(againRewind.body))
+const keptFinal = await state(KEPT)
+assert.deepEqual(count(keptFinal.files), { pending: 2, accepted: 1, rejected: 0, partial: 0 })
+assert.equal(disk.has(abs('d.txt')), false, 'the round recorded after the first rewind is dropped too')
+
 console.log('OK: rewind restores content, keeps earlier decisions, undoes later ones, and drops later rounds')

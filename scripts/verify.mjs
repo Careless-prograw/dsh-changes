@@ -63,8 +63,15 @@ const checks = {
   'no polling timer': !host.includes('native card re-assert failed'),
   're-applied on boot event': host.includes('app-boot/config-reload'),
   'checkpoints listed': host.includes('const buildCheckpoints = async'),
-  'checkpoint unwind exists': host.includes('const restoreToChange = async'),
-  'checkpoint action routed': host.includes("'restore'"),
+  'checkpoint rewind exists': host.includes('const rewindTo = async'),
+  'rewind is previewed before writing': host.includes("case 'rewindPreview'"),
+  'rewind restores the review state': host.includes('const restoreDecisionState ='),
+  'review state is snapshotted per round': host.includes('record.statusAt['),
+  'rewound rounds stay discarded': host.includes('const isDiscarded ='),
+  'a rejection is redone on the way back': host.includes('const redoOne ='),
+  'rewind refuses instead of guessing': host.includes("code: 'conflict', dryRun"),
+  'rewind stops when a file cannot be restored': host.includes('failures.length > 0'),
+  'decision clock is persisted': host.includes('hunksAt'),
   'empty session returns the full shape': host.includes('pendingBatches: 0, files: 0, pending: 0, added: 0, deleted: 0 }'),
   'state reads totals defensively': host.includes('collected.totals?.pending ?? 0'),
 }
@@ -100,6 +107,8 @@ const clientChecks = {
   'bulk buttons follow the pending count': client.includes('pendingCount === 0 || vcsMode'),
   'list shows pending files only': client.includes('const visibleFiles = showHandled ? [...pendingFiles, ...handledFiles] : pendingFiles'),
   'handled files reachable behind a toggle': client.includes('panel.showHandled') && client.includes('setShowHandled'),
+  'file rows carry their review state': client.includes("className: 'dshc-file__status'"),
+  'rewind confirms with real numbers': client.includes("op: 'rewindPreview'") && client.includes("op: 'rewind'"),
 }
 for (const [label, present] of Object.entries(clientChecks)) {
   console.log(`  ${present ? 'ok  ' : 'MISS'} ${label}`)

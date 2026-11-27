@@ -113,12 +113,17 @@ window.__ModuleLoader__.load({
         'panel.hideHandled': '隐藏已处理的文件',
         'panel.pendingOnly': '暂无待审改动',
         'panel.checkpointLabel': '检查点',
-        'panel.checkpointHint': '把待审文件退回到某个步骤结束时的状态',
+        'panel.checkpointHint': '把整份变更列表退回到某一轮结束时的状态：内容、待审/已接受/已拒绝一并还原',
         'panel.checkpointPick': '回退到…',
         'panel.checkpointItem': '第 {turn} 轮 · {files} 个文件',
         'panel.checkpointGo': '回退到此步骤',
-        'panel.checkpointConfirm': '把待审文件退回到第 {turn} 轮结束时的状态？其后各步的改动会被撤销。',
-        'panel.checkpointDone': '已回退 {count} 个文件',
+        'panel.checkpointConfirm': '回退到第 {turn} 轮结束时的状态？\n\n回退后：{pending} 个待审 · {accepted} 个已接受 · {rejected} 个已拒绝 · {partial} 个部分接受\n移除 {removed} 个文件（第 {turn} 轮之后才出现的改动，新建的文件会被删除）\n改写 {rewritten} 个文件的内容\n\n第 {turn} 轮之后的改动与审查决定都会丢失，且不可撤销。',
+        'panel.checkpointDone': '已回退到第 {turn} 轮：{pending} 个文件待审',
+        'panel.checkpointNone': '第 {turn} 轮没有可回退的改动',
+        'panel.statusPending': '待审',
+        'panel.statusAccepted': '已接受',
+        'panel.statusRejected': '已拒绝',
+        'panel.statusPartial': '部分接受',
       },
       en: {
         'bar.pending': '{count} files to review',
@@ -187,12 +192,17 @@ window.__ModuleLoader__.load({
         'panel.hideHandled': 'Hide handled files',
         'panel.pendingOnly': 'Nothing left to review',
         'panel.checkpointLabel': 'Checkpoint',
-        'panel.checkpointHint': 'Step the pending files back to the state after an earlier step',
-        'panel.checkpointPick': 'Roll back to…',
+        'panel.checkpointHint': 'Put the whole change list back to how it stood at the end of a round — content and review state together',
+        'panel.checkpointPick': 'Rewind to…',
         'panel.checkpointItem': 'turn {turn} · {files} files',
-        'panel.checkpointGo': 'Roll back here',
-        'panel.checkpointConfirm': 'Step the pending files back to the end of turn {turn}? Later steps are undone.',
-        'panel.checkpointDone': 'Rolled back {count} file(s)',
+        'panel.checkpointGo': 'Rewind to this round',
+        'panel.checkpointConfirm': 'Rewind to the end of turn {turn}?\n\nAfterwards: {pending} pending · {accepted} accepted · {rejected} rejected · {partial} partly accepted\n{removed} file(s) removed (changes that appeared after turn {turn}; files created then are deleted)\n{rewritten} file(s) rewritten\n\nChanges and review decisions made after turn {turn} are lost, and this cannot be undone.',
+        'panel.checkpointDone': 'Rewound to turn {turn}: {pending} file(s) pending',
+        'panel.checkpointNone': 'Turn {turn} has no changes to rewind to',
+        'panel.statusPending': 'pending',
+        'panel.statusAccepted': 'accepted',
+        'panel.statusRejected': 'rejected',
+        'panel.statusPartial': 'partly accepted',
         'panel.rollbackConfirm': 'Force the workspace to {ref}? Every change after that version is discarded and cannot be recovered.',
         'panel.rolledBack': 'Rolled back to {ref}',
         'panel.refEmpty': 'No version points',
@@ -419,6 +429,10 @@ window.__ModuleLoader__.load({
 .dshc-file[data-handled="true"]{opacity:.55}
 .dshc-file__path{flex:1;min-width:0;font-family:var(--dsw-font-mono,ui-monospace,Menlo,Consolas,monospace);font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;direction:rtl;unicode-bidi:plaintext;text-align:left}
 .dshc-file__stat{flex:none;display:flex;gap:6px;font-family:var(--dsw-font-mono,ui-monospace,Menlo,Consolas,monospace);font-size:11px}
+.dshc-file__status{flex:none;font-size:10.5px;line-height:16px;border-radius:var(--dsw-radius-xs,4px);padding:0 5px;border:1px solid currentColor;white-space:nowrap}
+.dshc-file__status[data-status="accepted"]{color:var(--dsw-alias-state-success-primary,#63c08a)}
+.dshc-file__status[data-status="rejected"]{color:var(--dsw-alias-state-error-primary,#f07070)}
+.dshc-file__status[data-status="partial"]{color:var(--dsw-alias-state-warning-primary,#e0b062)}
 .dshc-diff{flex:1;display:flex;flex-direction:column;min-width:0}
 .dshc-diff__head{display:flex;align-items:center;gap:8px;padding:7px 10px;border-bottom:1px solid var(--dsw-alias-border-l2,#303239);background:var(--dsw-alias-fill-l1,rgba(127,127,127,.1));font-size:11.5px;flex:none}
 .dshc-diff__path{flex:1;min-width:0;font-family:var(--dsw-font-mono,ui-monospace,Menlo,Consolas,monospace);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -531,6 +545,14 @@ window.__ModuleLoader__.load({
     function formatStat(value) {
       const number = Number.isFinite(value) ? value : 0
       return number
+    }
+
+    /** The four review states, as the Host reports them. */
+    const STATUS_LABEL = {
+      pending: 'panel.statusPending',
+      accepted: 'panel.statusAccepted',
+      rejected: 'panel.statusRejected',
+      partial: 'panel.statusPartial',
     }
 
     function shorten(path) {
@@ -1140,11 +1162,32 @@ window.__ModuleLoader__.load({
             onClick: async () => {
               const chosen = checkpoints.find((item) => String(item.seq) === checkpointSeq)
               if (chosen === undefined) return
-              if (!window.confirm(t('panel.checkpointConfirm', { turn: chosen.turn ?? '?' }))) return
-              const result = await run({ op: 'restore', seq: chosen.seq })
+              // Ask the Host what this would actually do before asking the user to
+              // accept it: the numbers in the dialog are the real ones.
+              const preview = await run({ op: 'rewindPreview', seq: chosen.seq })
+              if (preview?.ok !== true) {
+                flash(preview?.failures?.[0] ?? preview?.error ?? t('panel.failed'), true)
+                return
+              }
+              const statuses = preview.statuses ?? {}
+              const confirmed = window.confirm(t('panel.checkpointConfirm', {
+                turn: chosen.turn ?? '?',
+                pending: statuses.pending ?? 0,
+                accepted: statuses.accepted ?? 0,
+                rejected: statuses.rejected ?? 0,
+                partial: statuses.partial ?? 0,
+                removed: (preview.remove ?? []).length,
+                rewritten: (preview.rewritten ?? []).length,
+              }))
+              if (!confirmed) return
+              const result = await run({ op: 'rewind', seq: chosen.seq })
               if (result?.ok === true) {
-                flash(t('panel.checkpointDone', { count: result.restored ?? 0 }), false)
+                flash(t('panel.checkpointDone', {
+                  turn: chosen.turn ?? '?',
+                  pending: result.statuses?.pending ?? 0,
+                }), false)
                 setSelected({ path: '', seq: undefined })
+                setCheckpointSeq('')
               } else {
                 flash(result?.failures?.[0] ?? result?.error ?? t('panel.failed'), true)
               }
@@ -1244,6 +1287,15 @@ window.__ModuleLoader__.load({
           onClick: () => setSelected({ path: file.path, seq: undefined }),
         },
         h('span', { className: 'dshc-file__path' }, file.display),
+        // The review state travels with the row: after a rewind a file can come
+        // back pending, accepted or rejected, and the list has to say which.
+        file.status === undefined || file.status === 'pending'
+          ? null
+          : h(
+            'span',
+            { className: 'dshc-file__status', 'data-status': file.status },
+            t(STATUS_LABEL[file.status] ?? 'panel.statusPending'),
+          ),
         h(
           'span',
           { className: 'dshc-file__stat' },

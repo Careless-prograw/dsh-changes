@@ -114,6 +114,26 @@ function reverseOne(lines, hunk, shift = 0) {
 }
 
 /**
+ * Apply one hunk forward: put back the recorded new side where the old side
+ * still sits. The exact mirror of `reverseOne`, and the only way back from a
+ * rejection — a rejected hunk was *written* to disk, so rewinding past that
+ * moment has to redo it before any later recording can be unwound.
+ *
+ * Hunk positions are the recorded "after" coordinates, so a rejection replaced
+ * the block at `newStart - 1` with the old side and left it exactly there.
+ */
+function applyOne(lines, hunk, shift = 0) {
+  const { newSide, oldSide } = hunkSides(hunk)
+  const start = hunk.newStart - 1 + shift
+  if (start < 0 || start + oldSide.length > lines.length) return { ok: false }
+  if (!sameLines(lines.slice(start, start + oldSide.length), oldSide)) return { ok: false }
+  return {
+    ok: true,
+    lines: [...lines.slice(0, start), ...newSide, ...lines.slice(start + oldSide.length)],
+  }
+}
+
+/**
  * Line shift contributed by hunks already reversed above `target`.
  * Reversing a hunk replaces `newLines` lines with `oldLines`, so every later
  * position in the file moves by that delta.
@@ -134,6 +154,27 @@ function shiftFor(hunks, applied, target) {
 /** Resolve a recorded path to an absolute host path. */
 function absoluteOf(cwd, file) {
   return isAbsolute(file.path) ? file.path : join(cwd, file.path)
+}
+
+/**
+ * The review state of one file, from the decision recorded for its newest change.
+ *
+ * Only four answers exist, and the panel shows exactly these: nobody looked yet,
+ * the change was kept, the change was written back, or part of it was handled and
+ * part still waits. A rejection is visible in `kind`; a decision persisted by an
+ * older version carries no `kind`, so its hunk map decides.
+ */
+function statusOf(record) {
+  if (record === undefined) return 'pending'
+  const states = Object.values(record.hunks ?? {})
+  if (record.done === true) {
+    if (record.kind === 'accept') return 'accepted'
+    if (record.kind === 'reject') return 'rejected'
+    // Legacy record: no kind was stored, so infer it from the hunks.
+    if (states.length > 0 && states.every((state) => state === 'reject')) return 'rejected'
+    return 'accepted'
+  }
+  return states.length > 0 ? 'partial' : 'pending'
 }
 
 /**
@@ -318,7 +359,7 @@ export function apply(ctx, config) {
    * The location follows the harness convention (`$DSH_HOME`, else `~/.dsh`), so
    * the data sits beside the rest of the user's Harness state.
    */
-  const STORE_VERSION = 1
+  const STORE_VERSION = 2
   const MAX_TURNS_PER_SESSION = 20
   const MAX_SESSIONS = 12
   const MAX_STORE_BYTES = 8 * 1024 * 1024
@@ -351,7 +392,29 @@ export function apply(ctx, config) {
   const sessionRecord = (sessionId, create = false) => {
     let record = store.sessions[sessionId]
     if (record === undefined && create) {
-      record = { cwd: undefined, updatedAt: 0, turns: [], diffs: {}, decisions: {} }
+      record = {
+        cwd: undefined,
+        updatedAt: 0,
+        turns: [],
+        diffs: {},
+        decisions: {},
+        /**
+         * `statusAt[seq]` is the review state at the end of that round: the whole
+         * decision map as it stood when the round was captured, plus the decision
+         * clock's reading at that moment. Rewinding to a checkpoint restores this
+         * map verbatim, which is what makes the state travel with the content.
+         */
+        statusAt: {},
+        /** Decision clock: every decision and every hunk decision takes a tick. */
+        atSeq: 0,
+        /**
+         * A rewind discards every recording that already existed beyond the
+         * checkpoint, but the in-memory recorder cannot forget them. `cut` names
+         * that range so `collect` keeps pretending they never happened; rounds
+         * recorded *after* the rewind sit above `upTo` and are unaffected.
+         */
+        cut: undefined,
+      }
       store.sessions[sessionId] = record
     }
     return record
@@ -369,6 +432,7 @@ export function apply(ctx, config) {
       if (!Array.isArray(record.turns) || record.turns.length <= MAX_TURNS_PER_SESSION) continue
       for (const dropped of record.turns.splice(0, record.turns.length - MAX_TURNS_PER_SESSION)) {
         delete record.diffs?.[String(dropped.seq)]
+        delete record.statusAt?.[String(dropped.seq)]
       }
     }
   }
@@ -410,6 +474,33 @@ export function apply(ctx, config) {
   }
 
   /**
+   * Recordings a rewind discarded must stay discarded, even though the live
+   * recorder still holds its copy of them until the process ends.
+   */
+  const isDiscarded = (record, seq) => {
+    const cut = record?.cut
+    if (cut === undefined) return false
+    return seq > cut.target && seq <= cut.upTo
+  }
+
+  /** The whole decision map of one Session as it stands right now, minus later rounds. */
+  const snapshotDecisions = (sessionId, uptoSeq) => {
+    const snapshot = {}
+    const prefix = `${sessionId}\u0000`
+    for (const [key, entry] of decisions) {
+      if (!key.startsWith(prefix)) continue
+      if (entry.seq > uptoSeq) continue
+      snapshot[key.slice(prefix.length)] = {
+        kind: entry.kind,
+        done: entry.done === true,
+        hunks: { ...entry.hunks },
+        hunksAt: { ...(entry.hunksAt ?? {}) },
+      }
+    }
+    return snapshot
+  }
+
+  /**
    * Snapshot one announced turn — summary plus every file comparison — so the
    * pending list and its hunks survive a Host restart.
    */
@@ -420,6 +511,9 @@ export function apply(ctx, config) {
       const summary = recorder.summary(sessionId, seq)
       if (summary === undefined) return
       const record = sessionRecord(sessionId, true)
+      // A round the user already rewound past must not come back to life just
+      // because the recorder hands its summary over once more.
+      if (isDiscarded(record, seq)) return
       const files = summary.files.map((file) => ({
         path: file.path,
         display: file.display,
@@ -435,6 +529,14 @@ export function apply(ctx, config) {
       if (at >= 0) record.turns[at] = snapshot
       else record.turns.push(snapshot)
       record.turns.sort((left, right) => left.seq - right.seq)
+
+      // The review state at the instant this round ended. Taken before the
+      // comparisons are fetched, because that is the moment a checkpoint names.
+      record.statusAt = record.statusAt ?? {}
+      record.statusAt[String(seq)] = {
+        at: Number.isInteger(record.atSeq) ? record.atSeq : 0,
+        decisions: snapshotDecisions(sessionId, seq),
+      }
 
       const diffs = {}
       for (let index = 0; index < summary.files.length; index += 1) {
@@ -465,13 +567,42 @@ export function apply(ctx, config) {
     }
   }
 
-  const persistDecision = (sessionId, record) => {
+  /**
+   * The Session's decision clock: one tick per decision, and one per single hunk
+   * decision. A rewind compares these ticks against the tick a checkpoint was
+   * taken at, which is the only way to tell "this rejection was already part of
+   * the state back then" from "it happened later and has to be undone".
+   */
+  const nextAt = (sessionId) => {
     const stored = sessionRecord(sessionId, true)
+    stored.atSeq = Number.isInteger(stored.atSeq) ? stored.atSeq + 1 : 1
+    return stored.atSeq
+  }
+
+  /**
+   * Persist one decision.
+   * @param touched - the hunk index that just changed, or `'all'` when every hunk
+   *   was written back at once (a file-level rejection).
+   */
+  const persistDecision = (sessionId, record, touched) => {
+    const stored = sessionRecord(sessionId, true)
+    const at = nextAt(sessionId)
+    record.at = at
+    if (Number.isInteger(touched)) {
+      record.hunksAt = { ...(record.hunksAt ?? {}), [touched]: at }
+    } else if (touched === 'all') {
+      const hunksAt = {}
+      for (const index of Object.keys(record.hunks ?? {})) hunksAt[index] = at
+      record.hunksAt = hunksAt
+    }
     stored.decisions[`${record.seq}\u0000${record.path}`] = {
       seq: record.seq,
       path: record.path,
-      hunks: { ...record.hunks },
+      kind: record.kind,
       done: record.done === true,
+      at,
+      hunks: { ...record.hunks },
+      hunksAt: { ...(record.hunksAt ?? {}) },
     }
     stored.updatedAt = Date.now()
     scheduleFlush()
@@ -572,6 +703,9 @@ export function apply(ctx, config) {
     let anyLive = false
     if (recorder !== undefined) {
       for (const [seq, seqTurn] of [...map.entries()].sort((left, right) => left[0] - right[0])) {
+        // A round the user rewound past is gone even though the recorder still
+        // answers for it.
+        if (isDiscarded(persisted, seq)) continue
         const summary = recorder.summary(sessionId, seq)
         if (summary === undefined) continue
         anyLive = true
@@ -584,6 +718,7 @@ export function apply(ctx, config) {
     const stored = new Map()
     for (const entry of persisted?.turns ?? []) {
       if (!Number.isInteger(entry?.seq) || !Array.isArray(entry.files)) continue
+      if (isDiscarded(persisted, entry.seq)) continue
       stored.set(entry.seq, entry)
     }
 
@@ -638,6 +773,7 @@ export function apply(ctx, config) {
           oversized: file.oversized === true,
           index,
           handled: record !== undefined && record.done === true,
+          status: statusOf(record),
           hunks: record?.hunks ?? {},
         }
       })
@@ -697,6 +833,7 @@ export function apply(ctx, config) {
           added: file.added,
           deleted: file.deleted,
           handled: file.handled === true,
+          status: file.status,
           restored: batch.restored === true,
         })
       }
@@ -718,10 +855,12 @@ export function apply(ctx, config) {
         parts: merged.parts,
         // One review unit: the file is handled once its newest change set is.
         handled: latest?.handled === true,
+        status: latest?.status ?? 'pending',
       }
     }).sort((left, right) => (left.display < right.display ? -1 : left.display > right.display ? 1 : 0))
 
     const pendingFiles = files.filter((file) => !file.handled)
+    const countOf = (status) => files.filter((file) => file.status === status).length
     return {
       ok: true,
       cwd,
@@ -737,6 +876,9 @@ export function apply(ctx, config) {
         pendingBatches: queue.length,
         files: files.length,
         pending: pendingFiles.length,
+        accepted: countOf('accepted'),
+        rejected: countOf('rejected'),
+        partial: countOf('partial'),
         added: pendingFiles.reduce((sum, file) => sum + (Number.isFinite(file.added) ? file.added : 0), 0),
         deleted: pendingFiles.reduce((sum, file) => sum + (Number.isFinite(file.deleted) ? file.deleted : 0), 0),
       },
@@ -761,7 +903,10 @@ export function apply(ctx, config) {
         decisions.set(decisionKey(sessionId, decision.seq, decision.path), {
           seq: decision.seq,
           path: decision.path,
+          kind: decision.kind,
           hunks: decision.hunks ?? {},
+          hunksAt: decision.hunksAt ?? {},
+          at: Number.isInteger(decision.at) ? decision.at : undefined,
           done: decision.done === true,
         })
         restored += 1
@@ -778,7 +923,7 @@ export function apply(ctx, config) {
     const key = decisionKey(sessionId, seq, path)
     const existing = decisions.get(key)
     if (existing !== undefined) return existing
-    const record = { seq, path, hunks: {}, done: false }
+    const record = { seq, path, hunks: {}, hunksAt: {}, done: false }
     decisions.set(key, record)
     return record
   }
@@ -923,44 +1068,225 @@ export function apply(ctx, config) {
     }
     const record = freshDecision(sessionId, batch.seq, file.path)
     record.done = true
-    record.file = 'reject'
-    persistDecision(sessionId, record)
+    record.kind = 'reject'
+    // A file-level rejection writes back every hunk, so every hunk counts as
+    // rejected — rewinding past this moment has to redo all of them.
+    for (let index = 0; index < diff.hunks.length; index += 1) record.hunks[index] = 'reject'
+    persistDecision(sessionId, record, 'all')
     return { ok: true, path: file.path, hunks: diff.hunks.length }
   }
 
   /**
-   * Step a file back to how it looked after one earlier change.
+   * The review state one file has at the end of `targetSeq`.
    *
-   * A plan lands in steps; when a later step turns out wrong, undoing its hunks
-   * is not enough — the file has to return to the state the earlier step left it
-   * in, and a later step may have rewritten the very lines the earlier one
-   * produced. Every recording holds "baseline → that moment", so unwinding them
-   * one at a time reaches any earlier moment.
-   *
-   * Each unwind matches the side it expects to find, so a recording that does not
-   * chain simply refuses instead of writing a guess.
+   * A checkpoint stores the decision map as it stood then, so this is a lookup
+   * rather than an inference. Data recorded by a version without checkpoints
+   * falls back to "whatever decision exists for a round at or before it", which
+   * is the closest available answer and is reported as inexact.
    */
-  const restoreToChange = async (sessionId, merged, targetSeq, cwd, signal) => {
-    const newer = [...merged.parts].filter((part) => part.seq > targetSeq)
-    if (newer.length === 0) return { ok: true, path: merged.path, undone: 0, unchanged: true }
+  const statusAtCheckpoint = (sessionId, targetSeq, merged) => {
+    const record = sessionRecord(sessionId)
+    const snapshot = record?.statusAt?.[String(targetSeq)]
+    const part = [...merged.parts].reverse().find((candidate) => candidate.seq <= targetSeq)
+    if (part === undefined) return 'pending'
+    if (snapshot !== undefined) return statusOf(snapshot.decisions?.[`${part.seq}\u0000${merged.path}`])
+    return statusOf(decisionOf(sessionId, part.seq, merged.path))
+  }
+
+  /**
+   * Replace one Session's decisions with the ones a checkpoint recorded.
+   *
+   * Everything decided after that moment is dropped, which is what makes a
+   * rewound file come back as it was — pending again if nobody had looked yet.
+   * @returns whether the checkpoint was exact (it had a stored snapshot).
+   */
+  const restoreDecisionState = (sessionId, targetSeq) => {
+    const record = sessionRecord(sessionId)
+    const snapshot = record?.statusAt?.[String(targetSeq)]
+    const prefix = `${sessionId}\u0000`
+    for (const [key, entry] of [...decisions.entries()]) {
+      if (!key.startsWith(prefix)) continue
+      // With a snapshot every surviving record is rebuilt from it; without one,
+      // only the rounds beyond the checkpoint are dropped.
+      if (snapshot !== undefined || entry.seq > targetSeq) decisions.delete(key)
+    }
+    if (snapshot === undefined) return false
+    for (const [suffix, value] of Object.entries(snapshot.decisions ?? {})) {
+      const [seqText, ...rest] = suffix.split('\u0000')
+      const seq = Number(seqText)
+      if (!Number.isInteger(seq)) continue
+      decisions.set(`${prefix}${suffix}`, {
+        seq,
+        path: rest.join('\u0000'),
+        kind: value.kind,
+        hunks: { ...(value.hunks ?? {}) },
+        hunksAt: { ...(value.hunksAt ?? {}) },
+        at: snapshot.at,
+        done: value.done === true,
+      })
+    }
+    return true
+  }
+
+  /** Write one Session's in-memory decisions back into the store. */
+  const persistSessionDecisions = (sessionId) => {
+    const stored = sessionRecord(sessionId, true)
+    const prefix = `${sessionId}\u0000`
+    stored.decisions = {}
+    for (const [key, entry] of decisions) {
+      if (!key.startsWith(prefix)) continue
+      stored.decisions[`${entry.seq}\u0000${entry.path}`] = {
+        seq: entry.seq,
+        path: entry.path,
+        kind: entry.kind,
+        done: entry.done === true,
+        at: Number.isInteger(entry.at) ? entry.at : 0,
+        hunks: { ...entry.hunks },
+        hunksAt: { ...(entry.hunksAt ?? {}) },
+      }
+    }
+    scheduleFlush()
+  }
+
+  /**
+   * Drop every recording beyond a checkpoint.
+   *
+   * The live recorder keeps its own copy until the process ends, so `cut` also
+   * names the range `collect` must ignore. Rounds recorded *after* the rewind sit
+   * above `upTo` and are listed normally, which is what lets work continue.
+   */
+  const discardBeyond = (sessionId, targetSeq) => {
+    const record = sessionRecord(sessionId, true)
+    const known = [
+      ...record.turns.map((entry) => entry.seq),
+      ...Object.keys(record.diffs ?? {}).map(Number),
+      ...Object.keys(record.statusAt ?? {}).map(Number),
+      ...(turns.get(sessionId)?.keys() ?? []),
+    ].filter((value) => Number.isInteger(value))
+    const upTo = known.length === 0 ? targetSeq : Math.max(...known)
+    record.turns = record.turns.filter((entry) => entry.seq <= targetSeq)
+    for (const key of Object.keys(record.diffs ?? {})) {
+      if (Number(key) > targetSeq) delete record.diffs[key]
+    }
+    for (const key of Object.keys(record.statusAt ?? {})) {
+      if (Number(key) > targetSeq) delete record.statusAt[key]
+    }
+    record.cut = { target: targetSeq, upTo }
+    record.updatedAt = Date.now()
+    scheduleFlush()
+  }
+
+  /**
+   * Redo one rejected hunk: put its new side back where the old side sits.
+   *
+   * The recorded line number is only valid for the exact content the rejection
+   * left behind — a later round moves everything below it — so this searches for
+   * the old side, prefers the recorded position, and refuses when the block is
+   * missing or ambiguous instead of guessing.
+   */
+  const redoOne = (lines, hunk) => {
+    const { newSide, oldSide } = hunkSides(hunk)
+    const recorded = hunk.newStart - 1
+    // A hunk that only inserted lines has an empty old side: there is nothing to
+    // search for, so the new side goes back at the position it was taken from.
+    if (oldSide.length === 0) {
+      const start = Math.max(0, Math.min(recorded, lines.length))
+      return { ok: true, lines: [...lines.slice(0, start), ...newSide, ...lines.slice(start)] }
+    }
+    const matches = []
+    for (let start = 0; start + oldSide.length <= lines.length; start += 1) {
+      if (sameLines(lines.slice(start, start + oldSide.length), oldSide)) matches.push(start)
+    }
+    if (matches.length === 0) return { ok: false }
+    let start = matches[0]
+    if (matches.length > 1) {
+      const exact = matches.filter((value) => value === recorded)
+      if (exact.length !== 1) return { ok: false }
+      start = exact[0]
+    }
+    return {
+      ok: true,
+      lines: [...lines.slice(0, start), ...newSide, ...lines.slice(start + oldSide.length)],
+    }
+  }
+
+  /**
+   * Step one file back to the content it had at the end of `targetSeq`.
+   *
+   * Content changes are undone newest first, and a rejection is a content change
+   * like any other: it wrote the old side back to disk. Each step is applied at
+   * the moment it happened, so positions always match what the recording expects.
+   */
+  const rewindContent = async (sessionId, merged, targetSeq, cwd, signal, dryRun) => {
+    const record = sessionRecord(sessionId)
+    const boundary = record?.statusAt?.[String(targetSeq)]?.at
+    const sinceAt = Number.isInteger(boundary) ? boundary : Number.MAX_SAFE_INTEGER
+
+    const events = []
+    for (const part of merged.parts) {
+      const decision = decisionOf(sessionId, part.seq, merged.path)
+      for (const [index, state] of Object.entries(decision?.hunks ?? {})) {
+        if (state !== 'reject') continue
+        const at = decision.hunksAt?.[index]
+        if (!Number.isInteger(at) || at <= sinceAt) continue
+        events.push({ kind: 'redo', seq: part.seq, turn: part.turn, index: Number(index), at })
+      }
+      if (part.seq > targetSeq) {
+        const partBoundary = record?.statusAt?.[String(part.seq)]?.at
+        events.push({
+          kind: 'undo',
+          seq: part.seq,
+          turn: part.turn,
+          // Without a stored boundary the only safe order is "later rounds first",
+          // which is what a sequence-derived tick produces.
+          at: Number.isInteger(partBoundary)
+            ? partBoundary
+            : (sinceAt === Number.MAX_SAFE_INTEGER ? part.seq : sinceAt),
+        })
+      }
+    }
+    if (events.length === 0) return { ok: true, changed: false }
+    events.sort((left, right) => (right.at - left.at) || (right.seq - left.seq))
 
     const absolute = absoluteOf(cwd, { path: merged.path })
     let split
+    let missing = false
     try {
       split = splitLines(await readTextAt(absolute, signal))
-    } catch (error) {
-      return { ok: false, code: 'read-failed', error: `读取失败：${messageOf(error)}` }
+    } catch {
+      // A rejected creation deleted the file, so the state this rewind has to
+      // restore may hold content the disk no longer has. Start from empty and let
+      // the redo put it back; anything that still does not chain fails below.
+      missing = true
+      split = { lines: [], trailingNewline: true }
     }
     let lines = split.lines
 
-    // Newest first: the working copy matches the newest recording, and each
-    // unwind hands back exactly what the next older one expects.
-    for (const part of [...newer].sort((left, right) => right.seq - left.seq)) {
-      const found = await diffOf(sessionId, part.seq, merged.path, signal)
-      if (!found.ok) return { ok: false, code: 'no-diff', error: `第 ${part.turn ?? '?'} 轮差异不可用` }
-      const diff = found.diff
-      if (diff.kind !== 'text') {
-        return { ok: false, code: 'unsupported', error: '二进制或超大文件无法按步骤回退' }
+    const cache = new Map()
+    const diffFor = async (seq) => {
+      if (cache.has(seq)) return cache.get(seq)
+      const found = await diffOf(sessionId, seq, merged.path, signal)
+      const diff = found.ok && found.diff.kind === 'text' ? found.diff : undefined
+      cache.set(seq, diff)
+      return diff
+    }
+
+    for (const event of events) {
+      const diff = await diffFor(event.seq)
+      if (diff === undefined) {
+        return { ok: false, code: 'no-diff', error: `第 ${event.turn ?? '?'} 轮差异不可用` }
+      }
+      if (event.kind === 'redo') {
+        const result = redoOne(lines, diff.hunks[event.index])
+        if (!result.ok) {
+          return {
+            ok: false,
+            code: 'conflict',
+            error: `第 ${event.turn ?? '?'} 轮第 ${event.index + 1} 块被拒绝过，无法还原`,
+          }
+        }
+        lines = result.lines
+        continue
       }
       for (let index = diff.hunks.length - 1; index >= 0; index -= 1) {
         const result = reverseOne(lines, diff.hunks[index], 0)
@@ -968,46 +1294,103 @@ export function apply(ctx, config) {
           return {
             ok: false,
             code: 'conflict',
-            error: `回退到该检查点失败：第 ${part.turn ?? '?'} 轮的改动第 ${index + 1} 块与当前内容不一致`,
+            error: `第 ${event.turn ?? '?'} 轮的改动第 ${index + 1} 块与当前内容不一致`,
           }
         }
         lines = result.lines
       }
     }
 
+    // A file that did not exist at the checkpoint is removed rather than left
+    // behind empty, so the workspace matches that moment instead of approximating it.
+    const earliest = merged.parts[0]
+    let remove = false
+    if (earliest !== undefined && earliest.seq > targetSeq) {
+      const diff = await diffFor(earliest.seq)
+      remove = diff !== undefined && diff.before === false
+    }
+
+    if (dryRun) return { ok: true, changed: true, remove }
+
     try {
-      await writeTextAt(absolute, renderText(lines, split.trailingNewline), signal, sessionId)
+      if (remove) {
+        if (!missing) await deleteAt(absolute, signal, sessionId)
+      } else if (lines.length > 0 || !missing) {
+        await writeTextAt(absolute, renderText(lines, split.trailingNewline), signal, sessionId)
+      }
     } catch (error) {
       return { ok: false, code: 'write-failed', error: `写入失败：${messageOf(error)}` }
     }
-
-    // The file now matches the target change; everything after it was undone, so
-    // the review unit is settled rather than left half-decided.
-    const record = freshDecision(sessionId, merged.parts[merged.parts.length - 1].seq, merged.path)
-    record.done = true
-    record.file = 'restore'
-    persistDecision(sessionId, record)
-    return { ok: true, path: merged.path, undone: newer.length, unchanged: false }
+    return { ok: true, changed: true, remove }
   }
 
-  /** Restore one file, or every pending file, to the state after `targetSeq`. */
-  const restoreAllToChange = async (sessionId, targetSeq, path, signal) => {
+  /**
+   * Put the whole review back on an earlier round.
+   *
+   * What comes back is the state that round *ended* in: the files that existed
+   * then, each pending, kept or rejected as it was, with content matching.
+   * Everything recorded or decided afterwards is discarded — including accept and
+   * reject decisions, because those happened after the checkpoint.
+   *
+   * A dry run computes the whole plan and writes nothing, which is what the
+   * confirmation dialog shows.
+   */
+  const rewindTo = async (sessionId, targetSeq, dryRun, signal) => {
     const collected = await collect(sessionId)
     if (!collected.ok) return { ok: false, code: collected.code, error: collected.error }
-    if (collected.cwd === undefined) return { ok: false, code: 'no-cwd', error: '会话没有工作目录' }
-    const targets = path === undefined || path === ''
-      ? collected.files.filter((file) => !file.handled)
-      : collected.files.filter((file) => file.path === path)
-    if (targets.length === 0) return { ok: false, code: 'no-file', error: '没有可回退的文件' }
-
-    const done = []
-    const failures = []
-    for (const merged of targets) {
-      const result = await restoreToChange(sessionId, merged, targetSeq, collected.cwd, signal)
-      if (result.ok) done.push(result.path)
-      else failures.push(`${merged.display}：${result.error ?? result.code}`)
+    if (!Number.isInteger(targetSeq)) {
+      return { ok: false, code: 'no-checkpoint', error: '请先选择一个检查点' }
     }
-    return { ok: failures.length === 0, restored: done.length, failures, total: targets.length }
+    const batch = collected.batches.find((candidate) => candidate.seq === targetSeq)
+    if (batch === undefined) return { ok: false, code: 'no-checkpoint', error: '该检查点已不存在' }
+    if (collected.cwd === undefined) return { ok: false, code: 'no-cwd', error: '会话没有工作目录' }
+
+    const statuses = { pending: 0, accepted: 0, rejected: 0, partial: 0 }
+    const keep = []
+    const remove = []
+    const rewritten = []
+    const failures = []
+    for (const merged of collected.files) {
+      const earliest = merged.parts[0]
+      const existed = earliest !== undefined && earliest.seq <= targetSeq
+      if (existed) {
+        const status = statusAtCheckpoint(sessionId, targetSeq, merged)
+        statuses[status] = (statuses[status] ?? 0) + 1
+        keep.push(merged.display)
+      } else {
+        remove.push(merged.display)
+      }
+      const result = await rewindContent(sessionId, merged, targetSeq, collected.cwd, signal, dryRun)
+      if (!result.ok) {
+        failures.push(`${merged.display}：${result.error ?? result.code}`)
+        continue
+      }
+      if (result.changed === true) rewritten.push(merged.display)
+    }
+
+    const plan = {
+      statuses,
+      keep,
+      remove,
+      rewritten,
+      failures,
+      total: collected.files.length,
+      turn: batch.turn ?? null,
+    }
+    // Nothing is half-applied: one file that cannot be restored stops the run,
+    // so a failed rewind leaves the workspace and the review exactly as they were.
+    if (failures.length > 0) {
+      return { ok: false, code: 'conflict', dryRun, error: failures[0], ...plan }
+    }
+    if (dryRun) {
+      const anySnapshot = sessionRecord(sessionId)?.statusAt?.[String(targetSeq)] !== undefined
+      return { ok: true, dryRun: true, exact: anySnapshot, ...plan }
+    }
+
+    const exact = restoreDecisionState(sessionId, targetSeq)
+    persistSessionDecisions(sessionId)
+    discardBeyond(sessionId, targetSeq)
+    return { ok: true, dryRun: false, exact, ...plan }
   }
 
   // ------------------------------------------------------------------------ vcs
@@ -1701,7 +2084,7 @@ export function apply(ctx, config) {
     const record = freshDecision(sessionId, batch.seq, file.path)
     record.hunks[hunkIdx] = 'accept'
     settle(record, diff.kind === 'text' ? diff.hunks : [])
-    persistDecision(sessionId, record)
+    persistDecision(sessionId, record, hunkIdx)
     return { ok: true }
   }
 
@@ -1740,7 +2123,7 @@ export function apply(ctx, config) {
     }
     record.hunks[hunkIdx] = 'reject'
     settle(record, diff.hunks)
-    persistDecision(sessionId, record)
+    persistDecision(sessionId, record, hunkIdx)
     return { ok: true }
   }
 
@@ -1757,7 +2140,7 @@ export function apply(ctx, config) {
     if (!Number.isInteger(latestSeq)) return { ok: false, code: 'no-file', error: '该文件已不在改动列表中' }
     const record = freshDecision(sessionId, latestSeq, merged.path)
     record.done = true
-    record.file = 'accept'
+    record.kind = 'accept'
     persistDecision(sessionId, record)
     return { ok: true }
   }
@@ -1948,8 +2331,14 @@ export function apply(ctx, config) {
             signal,
             true,
           ))
+        // A dry run writes nothing: the panel confirms with the numbers it returns.
+        case 'rewindPreview':
+          return json(await rewindTo(sessionId, Number(body.seq), true, signal))
+        // `restore` is the name the first checkpoint release used; keeping it
+        // means a page that has not been reloaded yet still works.
+        case 'rewind':
         case 'restore':
-          return json(await restoreAllToChange(sessionId, Number(body.seq), path, signal))
+          return json(await rewindTo(sessionId, Number(body.seq), false, signal))
         case 'rollback':
           return json(await rollback(sessionId, body.kind === 'svn' ? 'svn' : 'git', body.ref, signal))
         default:

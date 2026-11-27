@@ -116,6 +116,7 @@ window.__ModuleLoader__.load({
         'panel.checkpointHint': '把整份变更列表退回到某一轮结束时的状态：内容、待审/已接受/已拒绝一并还原',
         'panel.checkpointPick': '回退到…',
         'panel.checkpointItem': '第 {turn} 轮 · {files} 个文件',
+        'panel.checkpointItemHint': '把整份变更退回第 {turn} 轮结束时的状态（内容与待审/已接受/已拒绝一并还原）',
         'panel.checkpointGo': '回退到此步骤',
         'panel.checkpointConfirm': '回退到第 {turn} 轮结束时的状态？\n\n回退后：{pending} 个待审 · {accepted} 个已接受 · {rejected} 个已拒绝 · {partial} 个部分接受\n移除 {removed} 个文件（第 {turn} 轮之后才出现的改动，新建的文件会被删除）\n改写 {rewritten} 个文件的内容\n\n第 {turn} 轮之后的改动与审查决定都会丢失，且不可撤销。',
         'panel.checkpointDone': '已回退到第 {turn} 轮：{pending} 个文件待审',
@@ -195,6 +196,7 @@ window.__ModuleLoader__.load({
         'panel.checkpointHint': 'Put the whole change list back to how it stood at the end of a round — content and review state together',
         'panel.checkpointPick': 'Rewind to…',
         'panel.checkpointItem': 'turn {turn} · {files} files',
+        'panel.checkpointItemHint': 'Rewind the whole review to how it stood at the end of turn {turn} (content and pending / accepted / rejected together)',
         'panel.checkpointGo': 'Rewind to this round',
         'panel.checkpointConfirm': 'Rewind to the end of turn {turn}?\n\nAfterwards: {pending} pending · {accepted} accepted · {rejected} rejected · {partial} partly accepted\n{removed} file(s) removed (changes that appeared after turn {turn}; files created then are deleted)\n{rewritten} file(s) rewritten\n\nChanges and review decisions made after turn {turn} are lost, and this cannot be undone.',
         'panel.checkpointDone': 'Rewound to turn {turn}: {pending} file(s) pending',
@@ -414,8 +416,31 @@ window.__ModuleLoader__.load({
 .dshc-panel__head{display:flex;align-items:center;gap:10px;padding:9px 12px;border-bottom:1px solid var(--dsw-alias-border-l2,#303239);flex:none}
 .dshc-panel__title{font-size:13.5px;font-weight:600}
 .dshc-badge{font-size:11px;font-family:var(--dsw-font-mono,ui-monospace,Menlo,Consolas,monospace);color:var(--dsw-alias-label-secondary,#9aa0ad);border:1px solid var(--dsw-alias-border-l2,#303239);border-radius:999px;padding:0 6px}
-.dshc-select{background:var(--dsw-alias-fill-l1,rgba(127,127,127,.12));color:var(--dsw-alias-label-primary,#f2f3f5);border:1px solid var(--dsw-alias-border-l2,#303239);border-radius:var(--dsw-radius-sm,6px);padding:4px 6px;font-size:12px;font-family:inherit;cursor:pointer}
-.dshc-select:focus-visible{outline:2px solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary,#6c8cff));outline-offset:1px}
+/* A dropdown that paints its own list. A native <select> popup is drawn by the
+   OS, so the panel's colours never reach its items — on a dark panel the list
+   came out white on white, and a disabled entry looked exactly like a usable
+   one. These rules own the surface, the text and the disabled state. */
+.dshc-dd{position:relative;display:inline-flex}
+.dshc-dd__btn{display:inline-flex;align-items:center;gap:6px;max-width:230px;padding:4px 7px;font:inherit;font-size:12px;color:var(--dsw-alias-label-primary,#f2f3f5);background:var(--dsw-alias-fill-l1,rgba(127,127,127,.12));border:1px solid var(--dsw-alias-border-l2,#303239);border-radius:var(--dsw-radius-sm,6px);cursor:pointer}
+.dshc-dd__btn:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.22))}
+.dshc-dd__btn:disabled{opacity:.5;cursor:default}
+.dshc-dd__btn:focus-visible{outline:2px solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary,#6c8cff));outline-offset:1px}
+.dshc-dd__label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* Nothing chosen yet reads weaker than a chosen value, so "回退到…" never looks
+   like a current selection. */
+.dshc-dd__label[data-placeholder="true"]{color:var(--dsw-alias-label-secondary,#9aa0ad)}
+.dshc-dd__caret{flex:none;font-size:9px;color:var(--dsw-alias-label-secondary,#9aa0ad)}
+.dshc-dd__menu{position:absolute;z-index:60;top:calc(100% + 4px);min-width:190px;max-width:320px;max-height:320px;overflow-y:auto;padding:4px;background:var(--dsw-alias-bg-layer-1,#1f2024);border:1px solid var(--dsw-alias-border-l2,#3a3d45);border-radius:var(--dsw-radius-sm,6px);box-shadow:0 10px 28px rgba(0,0,0,.5)}
+/* Which edge the list hangs off: a control near the left of a row opens to the
+   right, one parked at the end of a header opens to the left, so the list never
+   spills outside the panel. */
+.dshc-dd__menu[data-align="right"]{right:0}
+.dshc-dd__menu[data-align="left"]{left:0}
+.dshc-dd__item{display:block;width:100%;padding:5px 9px;border:0;border-radius:var(--dsw-radius-xs,4px);background:transparent;color:var(--dsw-alias-label-primary,#f2f3f5);font:inherit;font-size:12px;line-height:18px;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer}
+.dshc-dd__item:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.26))}
+.dshc-dd__item[data-active="true"]{color:var(--dsw-alias-state-business-primary,#6c8cff);font-weight:600}
+.dshc-dd__item[data-disabled="true"]{color:var(--dsw-alias-label-tertiary,#6f7683);cursor:default;background:transparent}
+.dshc-dd__item[data-disabled="true"]:hover{background:transparent}
 .dshc-tools{display:flex;gap:6px;padding:7px 10px;border-bottom:1px solid var(--dsw-alias-border-l2,#303239);flex-wrap:wrap;flex:none;align-items:center}
 .dshc-btn{background:var(--dsw-alias-fill-l1,rgba(127,127,127,.12));color:var(--dsw-alias-label-primary,#f2f3f5);border:1px solid var(--dsw-alias-border-l2,#303239);border-radius:var(--dsw-radius-sm,6px);padding:4px 10px;font:inherit;font-size:12px;cursor:pointer}
 .dshc-btn:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.16))}
@@ -553,6 +578,88 @@ window.__ModuleLoader__.load({
       accepted: 'panel.statusAccepted',
       rejected: 'panel.statusRejected',
       partial: 'panel.statusPartial',
+    }
+
+    /**
+     * A dropdown that renders its own list.
+     *
+     * A native `<select>` popup is painted by the OS, so the theme cannot reach
+     * its items: on a dark panel the list came out light-on-light, and a disabled
+     * entry looked the same as a usable one. Painting the list here makes the
+     * surface, the text and the disabled state ours to control.
+     *
+     * @param options - `{ value, label, disabled?, hint? }`, in display order.
+     */
+    function Dropdown(props) {
+      const { label, value, options, onChange, title, disabled, align } = props
+      const [open, setOpen] = useState(false)
+      const box = useRef(null)
+
+      useEffect(() => {
+        if (!open) return undefined
+        const onPointer = (event) => {
+          const node = box.current
+          if (node !== null && node !== undefined && node.contains(event.target) !== true) setOpen(false)
+        }
+        const onKey = (event) => {
+          if (event.key === 'Escape') setOpen(false)
+        }
+        document.addEventListener('mousedown', onPointer)
+        document.addEventListener('keydown', onKey)
+        return () => {
+          document.removeEventListener('mousedown', onPointer)
+          document.removeEventListener('keydown', onKey)
+        }
+      }, [open])
+
+      const current = options.find((option) => option.value === value)
+      return h(
+        'div',
+        { className: 'dshc-dd', ref: box },
+        h(
+          'button',
+          {
+            type: 'button',
+            className: 'dshc-dd__btn',
+            'aria-label': label,
+            'aria-haspopup': 'listbox',
+            'aria-expanded': open,
+            title,
+            disabled: disabled === true,
+            onClick: () => setOpen((wasOpen) => !wasOpen),
+          },
+          h('span', {
+            className: 'dshc-dd__label',
+            'data-placeholder': current === undefined || current.value === '' ? 'true' : 'false',
+          }, current === undefined ? label : current.label),
+          h('span', { className: 'dshc-dd__caret', 'aria-hidden': 'true' }, '▾'),
+        ),
+        open === true
+          ? h(
+            'div',
+            { className: 'dshc-dd__menu', role: 'listbox', 'aria-label': label, 'data-align': align === 'left' ? 'left' : 'right' },
+            options.map((option) => h(
+              'button',
+              {
+                key: option.value,
+                type: 'button',
+                role: 'option',
+                className: 'dshc-dd__item',
+                'aria-selected': option.value === value,
+                'data-active': option.value === value,
+                'data-disabled': option.disabled === true,
+                title: option.hint,
+                onClick: () => {
+                  if (option.disabled === true) return
+                  setOpen(false)
+                  onChange(option.value)
+                },
+              },
+              option.label,
+            )),
+          )
+          : null,
+      )
     }
 
     function shorten(path) {
@@ -1053,21 +1160,29 @@ window.__ModuleLoader__.load({
         
         data.restored === true ? h('span', { className: 'dshc-muted' }, t('panel.restoredBadge')) : null,
         h('span', { className: 'dshc-spacer' }),
-        h(
-          'select',
-          {
-            className: 'dshc-select',
-            value: baseline,
-            'aria-label': t('panel.baselineLabel'),
-            onChange: (event) => {
-              setBaseline(event.target.value)
-              setRef('')
+        h(Dropdown, {
+          label: t('panel.baselineLabel'),
+          value: baseline,
+          options: [
+            { value: 'snapshot', label: t('panel.baseline', { name: t('base.snapshot') }) },
+            {
+              value: 'git',
+              label: t('panel.baseline', { name: t('base.git') }),
+              disabled: vcsKind !== 'git',
+              hint: vcsKind === 'git' ? undefined : (vcs.reason ?? t('panel.vcsMissing')),
             },
+            {
+              value: 'svn',
+              label: t('panel.baseline', { name: t('base.svn') }),
+              disabled: vcsKind !== 'svn',
+              hint: vcsKind === 'svn' ? undefined : (vcs.reason ?? t('panel.vcsMissing')),
+            },
+          ],
+          onChange: (next) => {
+            setBaseline(next)
+            setRef('')
           },
-          h('option', { value: 'snapshot' }, t('panel.baseline', { name: t('base.snapshot') })),
-          h('option', { value: 'git', disabled: vcsKind !== 'git' }, t('panel.baseline', { name: t('base.git') })),
-          h('option', { value: 'svn', disabled: vcsKind !== 'svn' }, t('panel.baseline', { name: t('base.svn') })),
-        ),
+        }),
       )
 
       const vcsRefs = refsLive.data?.ok === true ? refsLive.data.refs ?? [] : []
@@ -1116,43 +1231,40 @@ window.__ModuleLoader__.load({
         // The version point to roll back to. It lives here, beside the action it
         // serves, so picking a base never replaces the whole panel.
         vcsMode
-          ? h(
-            'select',
-            {
-              className: 'dshc-select',
-              value: ref,
-              'aria-label': t('panel.pickRefFirst'),
-              title: t('panel.rollbackHint'),
-              onChange: (event) => setRef(event.target.value),
-            },
-            h('option', { value: '' }, t('panel.refPick')),
-            vcsRefs.slice(0, 50).map((item) => h(
-              'option',
-              { key: item.id, value: item.id },
-              item.label === '' ? item.id : `${item.id} ${item.label}`.slice(0, 80),
-            )),
-          )
+          ? h(Dropdown, {
+            label: t('panel.pickRefFirst'),
+            title: t('panel.rollbackHint'),
+            align: 'left',
+            value: ref,
+            options: [
+              { value: '', label: t('panel.refPick') },
+              ...vcsRefs.slice(0, 50).map((item) => ({
+                value: item.id,
+                label: item.label === '' ? item.id : `${item.id} ${item.label}`.slice(0, 80),
+              })),
+            ],
+            onChange: (next) => setRef(next),
+          })
           : null,
         // Stepping back to an earlier stage of the same work: the later stages'
         // hunks are unwound so the files return to that earlier state.
         checkpoints.length <= 1
           ? null
-          : h(
-            'select',
-            {
-              className: 'dshc-select',
-              value: checkpointSeq,
-              'aria-label': t('panel.checkpointLabel'),
-              title: t('panel.checkpointHint'),
-              onChange: (event) => setCheckpointSeq(event.target.value),
-            },
-            h('option', { value: '' }, t('panel.checkpointPick')),
-            [...checkpoints].reverse().map((item) => h(
-              'option',
-              { key: item.seq, value: String(item.seq) },
-              t('panel.checkpointItem', { turn: item.turn ?? '?', files: item.files }),
-            )),
-          ),
+          : h(Dropdown, {
+            label: t('panel.checkpointLabel'),
+            title: t('panel.checkpointHint'),
+            align: 'left',
+            value: checkpointSeq,
+            options: [
+              { value: '', label: t('panel.checkpointPick') },
+              ...[...checkpoints].reverse().map((item) => ({
+                value: String(item.seq),
+                label: t('panel.checkpointItem', { turn: item.turn ?? '?', files: item.files }),
+                hint: t('panel.checkpointItemHint', { turn: item.turn ?? '?' }),
+              })),
+            ],
+            onChange: (next) => setCheckpointSeq(next),
+          }),
         checkpoints.length <= 1
           ? null
           : h('button', {

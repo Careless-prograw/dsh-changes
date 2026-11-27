@@ -109,6 +109,13 @@ const clientChecks = {
   'handled files reachable behind a toggle': client.includes('panel.showHandled') && client.includes('setShowHandled'),
   'file rows carry their review state': client.includes("className: 'dshc-file__status'"),
   'rewind confirms with real numbers': client.includes("op: 'rewindPreview'") && client.includes("op: 'rewind'"),
+  // A native <select> popup is painted by the OS, so the theme never reaches its
+  // items; the panel draws its own list instead.
+  'dropdown paints its own list': client.includes("className: 'dshc-dd__menu'"),
+  'no native select is left': !client.includes("h(\n            'select'") && !client.includes("'select',"),
+  'disabled entries look disabled': client.includes("'data-disabled'") && client.includes('.dshc-dd__item[data-disabled="true"]'),
+  'the list hangs off the right edge': client.includes("'data-align': align === 'left' ? 'left' : 'right'"),
+  'an unchosen value looks unset': client.includes("'data-placeholder'"),
 }
 for (const [label, present] of Object.entries(clientChecks)) {
   console.log(`  ${present ? 'ok  ' : 'MISS'} ${label}`)
